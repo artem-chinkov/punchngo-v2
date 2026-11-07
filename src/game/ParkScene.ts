@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { AssetRegistry } from '../assets/AssetRegistry'
+import { GameAudio } from '../audio/GameAudio'
 import { defaultBalance } from '../combat/balance'
 import { BalancePanel } from '../debug/BalancePanel'
 import { TouchController } from '../input/TouchController'
@@ -17,6 +18,7 @@ const query = new URLSearchParams(location.search)
 
 export class ParkScene extends Phaser.Scene {
   private assets!: AssetRegistry
+  private audio!: GameAudio
   private park!: ParkView
   private combatView!: CombatView
   private run!: ParkRun
@@ -38,21 +40,28 @@ export class ParkScene extends Phaser.Scene {
     this.park = new ParkView(this, this.assets)
     this.combatView = new CombatView(this, this.assets)
     const root = document.querySelector<HTMLElement>('#ui')!
-    this.hud = new HUD(root, () => this.restart(), id => { this.resetInput(); this.run.choose(id) })
+    this.audio = new GameAudio(this)
+    this.audio.load()
+    this.hud = new HUD(root, () => { this.audio.unlock(); this.restart() }, id => {
+      this.resetInput()
+      this.run.choose(id)
+    }, this.audio.settings, settings => this.audio.setSettings(settings))
     if (query.get('debug') === '1') this.debug = new BalancePanel(root, () => {
       this.resetInput()
       this.renderFrame()
-    }, atBoss => this.restart(atBoss))
+    }, atBoss => { this.audio.unlock(); this.restart(atBoss) })
     this.run = this.createRun()
     this.touch = new TouchController(this.game.canvas, () => this.canInput(),
-      () => { this.run.tap() }, direction => this.run.swipe(direction))
-    landscape.addEventListener('change', this.resetInput)
-    document.addEventListener('visibilitychange', this.resetInput)
+      () => { this.audio.unlock(); this.run.tap() }, direction => this.run.swipe(direction))
+    this.visibilityChanged()
+    landscape.addEventListener('change', this.visibilityChanged)
+    document.addEventListener('visibilitychange', this.visibilityChanged)
     window.addEventListener('blur', this.resetInput)
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      landscape.removeEventListener('change', this.resetInput)
-      document.removeEventListener('visibilitychange', this.resetInput)
+      landscape.removeEventListener('change', this.visibilityChanged)
+      document.removeEventListener('visibilitychange', this.visibilityChanged)
       window.removeEventListener('blur', this.resetInput)
+      this.audio.resetRun()
       this.touch.destroy()
       root.replaceChildren()
     })
@@ -64,18 +73,18 @@ export class ParkScene extends Phaser.Scene {
       this.clock.reset()
       return
     }
-    const advancing = !this.debug?.open && !this.debug?.preview &&
+    const advancing = !this.debug?.paused &&
       (this.run.active || this.run.phase === 'finisher')
     this.wall += this.clock.frame(delta, this.debug?.speed ?? 1, advancing ? this.tick : undefined)
     if (this.run.finished && !this.recorded) {
       this.recorded = true
       if (!this.debug) this.records = recordResult(this.run.result())
     }
-    this.renderFrame()
+    this.renderFrame(Math.min(delta / 1000, 0.05))
   }
 
   private tick = (step: number) => {
-    this.run.update(step, this.debug?.invulnerable ?? false)
+    this.run.update(step, this.debug?.invulnerable ?? false, this.touch.isHolding())
     const advancing = this.run.active || this.run.phase === 'finisher'
     if (!advancing) this.resetInput()
     return advancing
@@ -83,23 +92,30 @@ export class ParkScene extends Phaser.Scene {
 
   private resetInput = () => {
     this.touch?.cancel()
+    this.hud?.cancelInput()
     this.run?.clearInput()
     this.clock.reset()
   }
 
+  private visibilityChanged = () => {
+    this.resetInput()
+    this.audio.setForeground(!document.hidden && !landscape.matches)
+  }
+
   private canInput() {
-    return this.run.active && !landscape.matches && !document.hidden && !this.debug?.open && !this.debug?.preview
+    return this.run.active && !landscape.matches && !document.hidden && !this.debug?.paused
   }
 
   private createRun() {
     const fixed = query.get('seed')
     const seed = this.debug?.seed ?? (fixed !== null && Number.isFinite(Number(fixed)) ? Number(fixed) >>> 0 :
       crypto.getRandomValues(new Uint32Array(1))[0])
-    return new ParkRun(this.debug?.balance ?? defaultBalance, defaultWorld, seed)
+    return new ParkRun(this.debug?.balance ?? defaultBalance, this.debug?.world ?? defaultWorld, seed)
   }
 
   private restart(atBoss = false) {
     this.resetInput()
+    this.audio.resetRun()
     this.run = this.createRun()
     this.recorded = false
     if (atBoss) this.run.debugBoss()
@@ -109,19 +125,22 @@ export class ParkScene extends Phaser.Scene {
     this.renderFrame()
   }
 
-  private renderFrame() {
+  private renderFrame(seconds = 0) {
     const { width, height } = this.scale.gameSize
     const { combat, runner, world } = this.run
     const now = this.run.visualTime
     for (const event of combat.events) {
-      this.combatView.show(event, now)
+      this.combatView.show(event, now, this.wall)
       this.hud.show(event, now)
     }
     combat.events.length = 0
+    for (const cue of combat.audioCues) this.audio.play(cue)
+    combat.audioCues.length = 0
+    this.audio.update(this.run.phase, combat.boss?.bossPhase, seconds)
     const projection = new PerspectiveProjector(width, height, runner.z, world, runner.x, runner.dash)
     this.park.draw(projection, world.viewDistance, Math.max(0, Math.min(1, (this.run.now - 80) / 65)))
     this.debug?.draw(this.run, this.game.loop.actualFps, this.wall)
     this.combatView.draw(this.run, projection, this.wall, this.debug?.zones ?? false, this.debug?.preview)
-    this.hud.draw(this.run, this.records, !!this.debug?.preview)
+    this.hud.draw(this.run, this.records, this.wall, !!(this.debug?.preview || this.debug?.cameraOpen))
   }
 }

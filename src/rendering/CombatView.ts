@@ -28,6 +28,7 @@ export class CombatView {
   private readonly fists: Record<Hand, Phaser.GameObjects.Image>
   private readonly marks: Phaser.GameObjects.Graphics
   private readonly effects: Phaser.GameObjects.Graphics
+  private readonly damageFrame: Phaser.GameObjects.Graphics
   private readonly shadows: Phaser.GameObjects.Graphics
   private readonly previewImage: Phaser.GameObjects.Image
   private readonly previewEnemy = createEnemy(-1, 'thug', 0, 0, 100, 0)
@@ -40,6 +41,7 @@ export class CombatView {
     this.shadows = scene.add.graphics().setDepth(-9998)
     this.marks = scene.add.graphics().setDepth(1)
     this.effects = scene.add.graphics().setDepth(2)
+    this.damageFrame = scene.add.graphics().setDepth(4)
     this.fists = { left: assets.image('fist.left').setDepth(3), right: assets.image('fist.right').setDepth(3) }
     this.previewImage = assets.image('thug').setVisible(false)
     for (let i = 0; i < 15; i++) this.slots.push(this.newSlot())
@@ -55,8 +57,8 @@ export class CombatView {
     this.hurtAt = this.defeatAt = -Infinity
   }
 
-  show(event: CombatEvent, now: number) {
-    if (event.kind === 'hurt') this.hurtAt = now
+  show(event: CombatEvent, now: number, wall: number) {
+    if (event.kind === 'hurt') this.hurtAt = wall
     else {
       if (this.particles.length >= 30) this.particles.shift()
       this.particles.push({ ...event, at: now })
@@ -76,6 +78,7 @@ export class CombatView {
     this.shadows.clear()
     this.marks.clear()
     this.effects.clear()
+    this.damageFrame.clear()
     this.previewImage.setVisible(false)
     const { width, height } = projector
     const now = run.visualTime
@@ -104,8 +107,11 @@ export class CombatView {
     }
 
     this.drawParticles(projector, now)
-    const hurt = Math.max(0, 1 - (now - this.hurtAt) / 0.29)
-    if (hurt) this.effects.lineStyle(13, colors.hurt, hurt * 0.59).strokeRect(4, 4, width - 8, height - 8)
+    const hurt = Math.max(0, 1 - (wall - this.hurtAt) / 0.30)
+    if (hurt) {
+      this.damageFrame.lineStyle(14, 0xff302c, hurt * 0.93).strokeRect(6, 6, width - 12, height - 12)
+      this.damageFrame.lineStyle(8, 0xc82130, hurt * 0.30).strokeRect(16, 16, width - 32, height - 32)
+    }
     const dash = Math.min(1, run.runner.dash * 1.28)
     if (run.active && dash > 0.06) {
       for (let i = 0; i < 11; i++) {

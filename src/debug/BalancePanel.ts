@@ -2,6 +2,7 @@ import { enemyPoses, enemyTypes, handPoses, type AnimationState, type EnemyType 
 import { defaultBalance, type Balance, type EnemyBalance } from '../combat/balance'
 import type { ParkRun } from '../game/ParkRun'
 import { upgradeIds, upgrades, type UpgradeId } from '../game/upgrades'
+import { defaultWorld } from '../world/route'
 import type { AnimationPreview } from '../rendering/CombatView'
 
 type Field<T> = [key: keyof T, label: string, min: number, max: number]
@@ -38,6 +39,8 @@ const names: Record<EnemyType, string> = { thug: 'Хулиган', quick: 'Бы�
 
 export class BalancePanel {
   balance: Balance = structuredClone(defaultBalance)
+  readonly world = { ...defaultWorld }
+  cameraOpen = false
   seed?: number
   speed = 1
   open = false
@@ -46,6 +49,7 @@ export class BalancePanel {
   preview?: AnimationPreview
   private readonly shell = document.createElement('div')
   private readonly panel: HTMLElement
+  private readonly cameraPanel: HTMLElement
   private readonly button: HTMLButtonElement
   private readonly form: HTMLFormElement
   private readonly groups = document.createElement('div')
@@ -57,11 +61,14 @@ export class BalancePanel {
   private current?: ParkRun
   private nextReadout = 0
 
+  get paused() { return this.open || this.cameraOpen || !!this.preview }
+
   constructor(root: HTMLElement, private readonly changed: () => void, restart: (atBoss: boolean) => void) {
     this.shell.innerHTML = `
       <button class="dev-toggle" type="button" aria-expanded="false">DEV</button>
       <section class="dev-panel" aria-label="Панель разработчика" hidden>
         <header><strong>БАЛАНС / PARK V2</strong><button type="button" data-action="close">Закрыть</button></header>
+        <div class="dev-actions"><button type="button" data-action="camera">Камера</button></div>
         <form>
           <div class="dev-actions">
             <button type="submit">Применить и начать</button>
@@ -91,12 +98,19 @@ export class BalancePanel {
             <button type="button" data-action="animation">Показать анимацию</button></div>
         </details>
       </section>
+      <section class="dev-camera" aria-label="Предпросмотр камеры" hidden>
+        <header><strong>КАМЕРА</strong><button type="button" data-camera-back>Назад в DEV</button></header>
+        <label>Высота камеры <output data-camera-height-value></output><input data-camera-height type="range" min="0" max="120"></label>
+        <label>Горизонт <output data-horizon-value></output><input data-horizon type="range" min="22" max="50"></label>
+        <button type="button" data-camera-reset>Сбросить камеру</button>
+      </section>
       <output class="dev-readout" hidden></output>
     `
     root.append(this.shell)
     const find = <T extends HTMLElement>(selector: string) => this.shell.querySelector<T>(selector)!
     this.button = find('.dev-toggle')
     this.panel = find('.dev-panel')
+    this.cameraPanel = find('.dev-camera')
     this.form = find('form')
     this.readout = find('.dev-readout')
     this.seedInput = find('[data-seed]')
@@ -118,6 +132,31 @@ export class BalancePanel {
     selectPoses()
     actor.onchange = selectPoses
     this.button.onclick = () => this.toggle(!this.open)
+    const cameraHeight = find<HTMLInputElement>('[data-camera-height]')
+    const horizon = find<HTMLInputElement>('[data-horizon]')
+    const heightValue = find<HTMLOutputElement>('[data-camera-height-value]')
+    const horizonValue = find<HTMLOutputElement>('[data-horizon-value]')
+    const syncCamera = () => {
+      cameraHeight.value = String(Math.round(this.world.cameraHeight * 100))
+      horizon.value = String(Math.round(this.world.horizon * 100))
+      heightValue.value = cameraHeight.value + '%'
+      horizonValue.value = horizon.value + '%'
+    }
+    const changeCamera = () => {
+      this.world.cameraHeight = cameraHeight.valueAsNumber / 100
+      this.world.horizon = horizon.valueAsNumber / 100
+      syncCamera()
+      this.changed()
+    }
+    syncCamera()
+    cameraHeight.oninput = horizon.oninput = changeCamera
+    find<HTMLButtonElement>('[data-camera-back]').onclick = () => this.toggle(true)
+    find<HTMLButtonElement>('[data-camera-reset]').onclick = () => {
+      this.world.cameraHeight = defaultWorld.cameraHeight
+      this.world.horizon = defaultWorld.horizon
+      syncCamera()
+      this.changed()
+    }
     invulnerable.onchange = () => { this.invulnerable = invulnerable.checked }
     zones.onchange = () => { this.zones = zones.checked }
     speed.onchange = () => { if (speed.validity.valid) this.speed = speed.valueAsNumber }
@@ -135,6 +174,16 @@ export class BalancePanel {
       if (!(event.target instanceof HTMLElement)) return
       const action = event.target.closest('button')?.dataset.action
       if (action === 'close') this.toggle(false)
+      if (action === 'camera') {
+        this.open = false
+        this.cameraOpen = true
+        this.panel.hidden = true
+        this.button.hidden = true
+        this.button.setAttribute('aria-expanded', 'false')
+        this.cameraPanel.hidden = false
+        this.changed()
+        cameraHeight.focus()
+      }
       if (action === 'reset') {
         this.balance = structuredClone(defaultBalance)
         this.renderFields()
@@ -172,6 +221,9 @@ export class BalancePanel {
   private toggle(open: boolean) {
     const wasPreview = !!this.preview
     this.preview = undefined
+    this.cameraOpen = false
+    this.cameraPanel.hidden = true
+    this.button.hidden = false
     this.open = open && !wasPreview
     this.panel.hidden = !this.open
     this.button.textContent = 'DEV'

@@ -1,7 +1,9 @@
+import type { AudioSettings } from '../audio/settings'
 import type { CombatEvent } from '../combat/CombatSystem'
 import type { ParkRun, Phase } from '../game/ParkRun'
 import type { Records } from '../game/records'
 import { levelXP, upgrades, type UpgradeId } from '../game/upgrades'
+import { UpgradeReveal } from './UpgradeReveal'
 
 const counts = new Intl.NumberFormat('ru-RU')
 const time = (value: number) => {
@@ -33,8 +35,13 @@ export class HUD {
   private previousOffer?: UpgradeId[]
   private feedbackUntil = 0
   private previousMultiplier = 1
+  private readonly reveal = new UpgradeReveal()
+  private audio: AudioSettings
+  private wall = 0
 
-  constructor(root: HTMLElement, begin: () => void, choose: (id: UpgradeId) => void) {
+  constructor(root: HTMLElement, begin: () => void, choose: (id: UpgradeId) => void,
+    audio: AudioSettings, changeAudio: (settings: AudioSettings) => void) {
+    this.audio = audio
     this.root = document.createElement('div')
     this.root.className = 'hud'
     this.root.innerHTML = `
@@ -61,6 +68,7 @@ export class HUD {
             <div class="pips" data-pips aria-label="Короткая серия"><i></i><i></i><i></i></div>
           </div>
           <progress data-xp max="1" aria-label="Опыт"></progress>
+          <button class="hud-mute" data-mute type="button" aria-label="Отключить звук" aria-pressed="false"></button>
         </footer>
       </div>
       <div class="round-overlay"></div>
@@ -82,17 +90,48 @@ export class HUD {
     for (const element of this.root.querySelectorAll<HTMLElement>('[data-value]')) {
       this.values[element.dataset.value!] = element
     }
+    const upgradeAt = (target: EventTarget | null) => target instanceof HTMLElement ?
+      target.closest('button')?.dataset.upgrade as UpgradeId | undefined : undefined
+    this.screen.addEventListener('pointerdown', event => {
+      if (event.isPrimary && event.button === 0) this.reveal.down(upgradeAt(event.target), event.pointerId, this.wall)
+    })
+    this.screen.addEventListener('pointerup', event => {
+      if (event.isPrimary) this.reveal.up(upgradeAt(event.target), event.pointerId)
+    })
+    this.screen.addEventListener('pointercancel', this.cancelInput)
+    this.root.addEventListener('click', event => {
+      if (!(event.target instanceof Element) || !event.target.closest('[data-mute]')) return
+      this.audio = { ...this.audio, muted: !this.audio.muted }
+      changeAudio(this.audio)
+      this.syncAudioControls()
+    })
+    this.screen.addEventListener('input', event => {
+      if (!(event.target instanceof HTMLInputElement)) return
+      const channel = event.target.dataset.volume
+      if (channel !== 'music' && channel !== 'effects') return
+      this.audio = { ...this.audio, [channel]: event.target.valueAsNumber / 100 }
+      changeAudio(this.audio)
+      this.syncAudioControls()
+    })
+    this.syncAudioControls()
     this.screen.addEventListener('click', event => {
       if (!(event.target instanceof HTMLElement)) return
       const button = event.target.closest('button')
       if (button?.hasAttribute('data-start')) begin()
-      else if (button?.dataset.upgrade) choose(button.dataset.upgrade as UpgradeId)
+      else {
+        const card = upgradeAt(event.target)
+        const keyboard = event.detail === 0 && (!(event instanceof PointerEvent) || !event.pointerType)
+        if (card && this.phase === 'upgrade' && !this.screen.hidden && this.reveal.accept(card, this.wall, keyboard)) choose(card)
+      }
     })
   }
+
+  cancelInput = () => this.reveal.cancel()
 
   reset() {
     this.phase = undefined
     this.previousOffer = undefined
+    this.cancelInput()
     this.feedbackUntil = 0
     this.previousMultiplier = 1
     set(this.feedback, '')
@@ -107,7 +146,8 @@ export class HUD {
     this.feedbackUntil = now + 0.64
   }
 
-  draw(run: ParkRun, records: Records, preview = false) {
+  draw(run: ParkRun, records: Records, wall: number, preview = false) {
+    this.wall = wall
     const { combat, phase, now, level } = run
     const boss = combat.boss
     const hp = Math.ceil(combat.hp)
@@ -134,7 +174,7 @@ export class HUD {
     if (this.pips.dataset.lit !== pips) this.pips.dataset.lit = pips
     const counter = combat.counterTarget(run.runner, now)
     set(this.signal, counter ? 'ЖЁЛТЫЙ · ТАП ДЛЯ КОНТРАТАКИ' :
-      boss ? 'БУЛЬДОГ · СЛЕДИ ЗА ЗАМАХОМ' : now < 19 ? 'ТАП — УДАР   /   СВАЙП — ПОЛОСА' : '')
+      boss ? 'БУЛЬДОГ · СЛЕДИ ЗА ЗАМАХОМ' : now < 19 ? 'ТАП / УДЕРЖАНИЕ — УДАР · СВАЙП — ПОЛОСА' : '')
     this.signal.classList.toggle('counter-ready', !!counter)
     set(this.combo, combat.combo > 1 ? combat.combo + ' COMBO ×' + counts.format(combat.multiplier) : '')
     if (combat.multiplier !== this.previousMultiplier) {
@@ -145,14 +185,54 @@ export class HUD {
     }
     if (run.visualTime >= this.feedbackUntil) set(this.feedback, '')
     this.screen.hidden = preview || (phase !== 'ready' && phase !== 'upgrade' && !run.finished)
-    if (phase === this.phase && run.offer === this.previousOffer) return
+    if (phase !== this.phase || run.offer !== this.previousOffer) {
+      this.phase = phase
+      this.previousOffer = run.offer
+      this.display.hidden = phase === 'ready'
+      this.cancelInput()
+      if (phase === 'ready') this.menu(records)
+      else if (phase === 'upgrade') {
+        this.reveal.start(wall)
+        this.level(run)
+      } else if (run.finished) this.result(run, records)
+    }
+    if (phase === 'upgrade' && !preview) this.revealCards()
+  }
 
-    this.phase = phase
-    this.previousOffer = run.offer
-    this.display.hidden = phase === 'ready'
-    if (phase === 'ready') this.menu(records)
-    else if (phase === 'upgrade') this.level(run)
-    else if (run.finished) this.result(run, records)
+  private revealCards() {
+    const stage = this.reveal.stage(this.wall)
+    const card = this.screen.querySelector<HTMLElement>('.level-card')!
+    if (card.dataset.stage === stage) return
+    card.dataset.stage = stage
+    card.querySelector<HTMLElement>('.level-notice')!.hidden = stage !== 'notice'
+    card.querySelector<HTMLElement>('.level-choices')!.hidden = stage === 'notice'
+    if (stage === 'ready') {
+      for (const button of card.querySelectorAll<HTMLButtonElement>('.upgrade')) button.disabled = false
+    }
+  }
+
+  private audioControls() {
+    return `<details class="audio-options">
+      <summary>Настройки звука</summary>
+      <label>Музыка <input type="range" data-volume="music" min="0" max="100"><output data-volume-value="music"></output></label>
+      <label>Эффекты <input type="range" data-volume="effects" min="0" max="100"><output data-volume-value="effects"></output></label>
+      <button type="button" data-mute aria-label="Отключить звук" aria-pressed="false"></button>
+    </details>`
+  }
+
+  private syncAudioControls() {
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>('[data-mute]')) {
+      button.setAttribute('aria-pressed', String(this.audio.muted))
+      set(button, button.classList.contains('hud-mute') ? (this.audio.muted ? '🔇' : '🔊') :
+        (this.audio.muted ? '🔇 Звук выключен' : '🔊 Звук включён'))
+    }
+    for (const channel of ['music', 'effects'] as const) {
+      const input = this.screen.querySelector<HTMLInputElement>('[data-volume=' + channel + ']')
+      const output = this.screen.querySelector<HTMLOutputElement>('[data-volume-value=' + channel + ']')
+      if (!input || !output) continue
+      input.value = String(Math.round(this.audio[channel] * 100))
+      output.value = input.value + '%'
+    }
   }
 
   private menu(records: Records) {
@@ -162,29 +242,37 @@ export class HUD {
         <h1>PUNCH <em>’N’</em><br>GO<span>.</span></h1>
         <p class="menu-copy">Пробеги парк. Разбей группы врагов. Встреть Бульдога.</p>
         <ul class="round-guide">
-          <li><b>01</b><p><strong>Тап.</strong> Удар и рывок вперёд.</p></li>
-          <li><b>02</b><p><strong>Свайп.</strong> Смени полосу влево или вправо.</p></li>
-          <li><b>03</b><p><strong>Жёлтый сигнал.</strong> Тапни, чтобы перебить атаку.</p></li>
+          <li><span aria-hidden="true">👣</span><p><strong>Бег.</strong> Герой сам бежит по парку.</p></li>
+          <li><span aria-hidden="true">🥊</span><p><strong>Удар и рывок.</strong> Тапни для одного удара или удерживай палец для серии.</p></li>
+          <li><span aria-hidden="true">↔️</span><p><strong>Свайп.</strong> Смени полосу. Удержание при этом прервётся.</p></li>
+          <li><span aria-hidden="true">❗</span><p><strong>Красный сигнал.</strong> Враг замахнулся. Автоудары ждут, отпусти палец.</p></li>
+          <li><span aria-hidden="true">🟡</span><p><strong>Контратака.</strong> Тапни на жёлтом, чтобы перебить атаку.</p></li>
+          <li><span aria-hidden="true">💥</span><p><strong>Комбо.</strong> Третье попадание подряд даёт широкий хук.</p></li>
         </ul>
         ${records.best ? '<p class="record">РЕКОРД <strong>' + counts.format(records.best.score) + '</strong></p>' : ''}
+        ${this.audioControls()}
         <button type="button" data-start>Начать забег <span aria-hidden="true">➜</span></button>
       </section>`
+    this.syncAudioControls()
   }
 
   private level(run: ParkRun) {
     this.screen.innerHTML = `
-      <section class="round-card level-card" aria-label="Выбор улучшения">
+      <section class="round-card level-card" data-stage="notice" aria-label="Выбор улучшения">
         <p class="round-kicker">УЛУЧШЕНИЕ / УРОВЕНЬ ${run.level}</p>
-        <h2>Выбери усиление</h2>
-        <div class="upgrades">${run.offer.map(id => {
+        <h2 class="level-notice" role="status">Новый уровень</h2>
+        <div class="level-choices" hidden>
+          <h2>Выбери усиление</h2>
+          <div class="upgrades">${run.offer.map(id => {
           const item = upgrades[id]
           const rank = run.combat.build.rank(id)
-          return `<button class="upgrade" type="button" data-upgrade="${id}">
+          return `<button class="upgrade" type="button" disabled data-upgrade="${id}">
             <b class="upgrade-icon" aria-hidden="true">${item.icon}</b>
             <span><strong>${item.name}</strong><small>${item.text}</small></span>
             <span class="upgrade-rank">${rank} → ${rank + 1} / ${item.max}</span>
           </button>`
-        }).join('')}</div>
+          }).join('')}</div>
+        </div>
       </section>`
   }
 
@@ -206,9 +294,11 @@ export class HUD {
           <div><dt>Время</dt><dd>${time(result.time)}</dd></div>
         </dl>
         ${records.best ? '<p class="record">РЕКОРД <strong>' + counts.format(records.best.score) + '</strong></p>' : ''}
+        ${this.audioControls()}
         <button type="button" data-start>Новый забег <span aria-hidden="true">➜</span></button>
       </section>`
     const cause = this.screen.querySelector('.result-cause')
     if (cause) set(cause, result.cause)
+    this.syncAudioControls()
   }
 }

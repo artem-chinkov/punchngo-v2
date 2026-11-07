@@ -1,0 +1,205 @@
+{
+  "name": "PUNCH 'N' GO v2.0 — Original Audio Pack",
+  "version": "2026-11-07-01",
+  "sample_rate": 32000,
+  "license_note": "All audio in this pack was synthesized for this project; no external sound recordings or sampled commercial compositions were used.",
+  "music": [
+    {
+      "key": "music.park",
+      "file": "music/park_run_152bpm.mp3",
+      "master": "music/park_run_152bpm.wav",
+      "bpm": 152,
+      "bars": 32,
+      "description": "Park Run — основная музыка уровня",
+      "volume": 0.28
+    },
+    {
+      "key": "music.bulldog.phase1",
+      "file": "music/bulldog_phase1_168bpm.mp3",
+      "master": "music/bulldog_phase1_168bpm.wav",
+      "bpm": 168,
+      "bars": 32,
+      "description": "Бульдог — фаза 1",
+      "volume": 0.31
+    },
+    {
+      "key": "music.bulldog.phase2",
+      "file": "music/bulldog_phase2_168bpm.mp3",
+      "master": "music/bulldog_phase2_168bpm.wav",
+      "bpm": 168,
+      "bars": 32,
+      "description": "Бульдог — усиленная фаза 2",
+      "volume": 0.31
+    }
+  ],
+  "sfx": [
+    {
+      "key": "punch.miss",
+      "files": [
+        "sfx/punch_whoosh_01.wav",
+        "sfx/punch_whoosh_02.wav",
+        "sfx/punch_whoosh_03.wav"
+      ],
+      "volume": 0.58
+    },
+    {
+      "key": "punch.hit",
+      "files": [
+        "sfx/hit_light_01.wav",
+        "sfx/hit_light_02.wav",
+        "sfx/hit_light_03.wav"
+      ],
+      "volume": 0.58
+    },
+    {
+      "key": "punch.heavy_hit",
+      "files": [
+        "sfx/hit_heavy_01.wav",
+        "sfx/hit_heavy_02.wav"
+      ],
+      "volume": 0.58
+    },
+    {
+      "key": "punch.hook",
+      "files": [
+        "sfx/hook_impact.wav"
+      ],
+      "volume": 0.62
+    },
+    {
+      "key": "counter.success",
+      "files": [
+        "sfx/counter.wav"
+      ],
+      "volume": 0.68
+    },
+    {
+      "key": "counter.perfect",
+      "files": [
+        "sfx/perfect_counter.wav"
+      ],
+      "volume": 0.72
+    },
+    {
+      "key": "enemy.collision",
+      "files": [
+        "sfx/enemy_collision.wav"
+      ],
+      "volume": 0.49
+    },
+    {
+      "key": "enemy.fall",
+      "files": [
+        "sfx/enemy_fall.wav"
+      ],
+      "volume": 0.45
+    },
+    {
+      "key": "player.hurt",
+      "files": [
+        "sfx/player_hurt.wav"
+      ],
+      "volume": 0.6
+    },
+    {
+      "key": "boss.windup",
+      "files": [
+        "sfx/boss_windup.wav"
+      ],
+      "volume": 0.62
+    },
+    {
+      "key": "boss.attack",
+      "files": [
+        "sfx/boss_attack.wav"
+      ],
+      "volume": 0.62
+    },
+    {
+      "key": "boss.jump_back",
+      "files": [
+        "sfx/boss_jump_back.wav"
+      ],
+      "volume": 0.52
+    },
+    {
+      "key": "boss.stun",
+      "files": [
+        "sfx/boss_stun.wav"
+      ],
+      "volume": 0.55
+    },
+    {
+      "key": "upgrade.uppercut",
+      "files": [
+        "sfx/uppercut.wav"
+      ],
+      "volume": 0.62
+    },
+    {
+      "key": "upgrade.shockwave",
+      "files": [
+        "sfx/shockwave.wav"
+      ],
+      "volume": 0.56
+    },
+    {
+      "key": "upgrade.electric",
+      "files": [
+        "sfx/electric.wav"
+      ],
+      "volume": 0.55
+    },
+    {
+      "key": "upgrade.fire",
+      "files": [
+        "sfx/fire.wav"
+      ],
+      "volume": 0.43
+    },
+    {
+      "key": "ui.level_up",
+      "files": [
+        "sfx/level_up.wav"
+      ],
+      "volume": 0.6
+    },
+    {
+      "key": "ui.upgrade_select",
+      "files": [
+        "sfx/upgrade_select.wav"
+      ],
+      "volume": 0.46
+    },
+    {
+      "key": "combo.milestone",
+      "files": [
+        "sfx/combo_milestone.wav"
+      ],
+      "volume": 0.45
+    },
+    {
+      "key": "game.victory",
+      "files": [
+        "sfx/victory.wav"
+      ],
+      "volume": 0.64
+    },
+    {
+      "key": "game.defeat",
+      "files": [
+        "sfx/defeat.wav"
+      ],
+      "volume": 0.55
+    }
+  ],
+  "integration": {
+    "initial_music_volume": 0.28,
+    "initial_sfx_volume": 0.6,
+    "mute_persist": "localStorage",
+    "unlock": "first user gesture / Start button; Safari iOS AudioContext resume",
+    "phase_transition": "crossfade boss phase 1 -> phase 2 on a musical bar boundary, same 168 BPM and arrangement length",
+    "visibility": "suspend/mute on background tab, resume on active",
+    "polyphony": "limit hit effects, 1 instance per rapid event, rotate randomized samples"
+  }
+}

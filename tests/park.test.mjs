@@ -114,7 +114,24 @@ test('gesture capture, swipe suppression, multiple pointers, and blur or visibil
     pointer('pointerup', 1, 80, 80, 350)
     pointer('pointerdown', 1, 80, 80, 370)
     pointer('pointerup', 1, 80, 80, 410)
-    assert.deepEqual(actions, ['tap', -1, 1, 'tap'])
+    pointer('pointerdown', 1, 80, 80, 450)
+    assert.equal(input.isHolding(629), false)
+    assert.equal(input.isHolding(630), true)
+    pointer('pointerup', 1, 80, 80, 640)
+    assert.equal(input.isHolding(641), false)
+
+    pointer('pointerdown', 1, 80, 80, 670)
+    assert.equal(input.isHolding(850), true)
+    pointer('pointermove', 1, 118, 80, 860)
+    assert.equal(input.isHolding(900), false)
+    pointer('pointerup', 1, 123, 80, 920)
+
+    pointer('pointerdown', 1, 80, 80, 940)
+    assert.equal(input.isHolding(1120), true)
+    globalThis.window.dispatchEvent(new Event('blur'))
+    assert.equal(input.isHolding(1130), false)
+    pointer('pointerup', 1, 80, 80, 1140)
+    assert.deepEqual(actions, ['tap', -1, 1, 'tap', 1])
   } finally {
     input.destroy()
     globalThis.window = oldWindow
@@ -177,10 +194,12 @@ test('group contact spends HP once, knocks enemies aside and respects invulnerab
   place(run, 'quick', 0, 0.68)
   play(run, 0.07)
   assert.equal(run.combat.hp, 95)
+  assert.equal(events(run.combat, 'hurt').length, 1)
   assert.ok(run.combat.enemies.every(enemy => enemy.flightUntil > run.now))
   place(run, 'brute', 0, 0.58)
   play(run, 0.05)
   assert.equal(run.combat.hp, 95)
+  assert.equal(events(run.combat, 'hurt').length, 1)
   play(run, 0.9)
   place(run, 'brute', 0, 0.57)
   play(run, 0.05)
@@ -547,4 +566,138 @@ test('resuming after a suspended frame discards wall time and advances on the ne
   clock.frame(20, 1, tick)
   assert.ok(run.now > time && run.now < time + 0.04)
   assert.ok(run.runner.z > position)
+})
+
+test('hold repeats at the combat cooldown, dashes on misses and leaves counters to taps', () => {
+  const run = newRun()
+  const { combat, runner } = run
+  combat.take('flurry')
+  const interval = combat.punchInterval
+  assert.equal(combat.holdAttack(runner, 0), true)
+  assert.equal(combat.holdAttack(runner, interval - 0.001), false)
+  assert.equal(combat.holdAttack(runner, interval), true)
+  assert.equal(events(combat, 'miss').length, 2)
+  assert.ok(runner.dash > 0)
+  const enemy = place(run)
+  setPose(enemy, 'telegraph', 0.5, 0.50)
+  assert.equal(combat.holdAttack(runner, 0.6), false)
+  assert.equal(combat.holdAttack(runner, 0.96), false)
+  assert.equal(combat.counters, 0)
+  assert.equal(combat.tap(runner, 0.96), true)
+  assert.equal(combat.perfect, 1)
+  assert.equal(enemy.pose, 'stunned')
+  assert.equal(combat.holdAttack(runner, 0.96 + interval), true)
+  assert.equal(combat.counters, 1)
+})
+
+test('a held attack passes through the normal run and pauses immediately when it earns a level', () => {
+  const run = newRun()
+  run.start()
+  run.combat.xp = levelXP(2) - run.balance.enemies.thug.xp
+  const enemy = place(run, 'thug', 0, 1.4, 1)
+  setPose(enemy, 'recovery', run.now, 0.25)
+  run.update(dt, false, true)
+  assert.equal(run.combat.kills, 1)
+  assert.equal(run.phase, 'upgrade')
+  const position = run.runner.z
+  const time = run.now
+  const strike = run.combat.strike
+  for (let i = 0; i < 40; i++) run.update(dt, false, true)
+  assert.equal(run.runner.z, position)
+  assert.equal(run.now, time)
+  assert.equal(run.combat.strike, strike)
+})
+
+test('level cards require a new matching pointer gesture after the entry delay', async () => {
+  const { UpgradeReveal } = await load('ui/UpgradeReveal')
+  const reveal = new UpgradeReveal()
+  reveal.start(0)
+  assert.equal(reveal.stage(0.349), 'notice')
+  assert.equal(reveal.stage(0.35), 'entering')
+  reveal.down('steel', 1, 0.52)
+  reveal.up('steel', 1)
+  assert.equal(reveal.accept('steel', 0.53, false), false)
+  assert.equal(reveal.stage(0.53), 'ready')
+
+  reveal.down('steel', 1, 0.54)
+  reveal.up('steel', 2)
+  assert.equal(reveal.accept('steel', 0.57, false), false)
+  reveal.down('steel', 1, 0.58)
+  reveal.up('dash', 1)
+  assert.equal(reveal.accept('dash', 0.59, false), false)
+  reveal.down('steel', 1, 0.60)
+  reveal.up('steel', 1)
+  assert.equal(reveal.accept('steel', 0.61, false), true)
+  assert.equal(reveal.accept('steel', 0.62, false), false)
+
+  reveal.start(1)
+  assert.equal(reveal.accept('steel', 1.3, true), false)
+  assert.equal(reveal.accept('steel', 1.6, true), true)
+})
+
+test('camera height changes vertical perspective independently of horizon, scale and lane', () => {
+  const make = (cameraHeight, horizon = defaultWorld.horizon) =>
+    new PerspectiveProjector(320, 470, 48, { ...defaultWorld, cameraHeight, horizon }, laneX(-1), 0.8)
+  const high = make(1)
+  const low = make(0.70)
+  assert.equal(defaultWorld.cameraHeight, 0)
+  assert.equal(defaultWorld.horizon, 0.50)
+  assert.equal(low.horizon, high.horizon)
+  const a = high.project(0, 53)
+  const b = low.project(0, 53)
+  assert.ok(b.y < a.y && b.y > low.horizon)
+  assert.equal(b.x, a.x)
+  assert.equal(b.scale, a.scale)
+  assert.ok(low.project(0, 48).y > low.height)
+  const minimum = make(0)
+  const mid = make(0.35)
+  const nearMinimum = minimum.project(0, 48)
+  const farMinimum = minimum.project(0, 53)
+  assert.ok(nearMinimum.y > minimum.height && Number.isFinite(nearMinimum.y))
+  assert.ok(minimum.horizon < farMinimum.y && farMinimum.y < mid.project(0, 53).y)
+  assert.ok(mid.project(0, 53).y < b.y)
+  assert.equal(farMinimum.x, a.x)
+  assert.equal(farMinimum.scale, a.scale)
+  const oldY = height => low.horizon + (470 + 12 - low.horizon) * (3.15 * height / (3.15 * height + 5))
+  for (const height of [0.7, 0.85, 1.2]) assert.equal(make(height).project(0, 53).y, oldY(height))
+  assert.ok(make(0.70, 0.35).horizon < low.horizon)
+})
+
+test('combat emits one primary punch cue for a tap or accepted hold, including a wide hook', () => {
+  const run = newRun()
+  run.start()
+  assert.equal(run.tap(), true)
+  assert.equal(run.tap(), false)
+  assert.deepEqual(run.combat.audioCues, ['punch.miss'])
+  for (const [index, expected] of ['punch.hit', 'punch.hit', 'punch.hook'].entries()) {
+    run.combat.enemies.length = 0
+    run.combat.audioCues.length = 0
+    run.now += run.combat.punchInterval + 0.01
+    place(run, 'thug')
+    if (index === 2) place(run, 'thug', 1, 2.4)
+    assert.equal(run.combat.holdAttack(run.runner, run.now), true)
+    assert.deepEqual(run.combat.audioCues.filter(cue => cue.startsWith('punch.')), [expected])
+  }
+})
+
+test('Bulldog cues follow actual attacks, and phase II begins on exactly half HP', () => {
+  const run = newRun()
+  run.debugBoss()
+  const boss = run.combat.boss
+  boss.z = run.runner.z + 3
+  play(run, 0.1)
+  assert.deepEqual(run.combat.audioCues, ['boss.windup'])
+  play(run, run.balance.enemies.bulldog.windup + 0.4)
+  assert.equal(run.combat.audioCues.filter(cue => cue === 'boss.attack').length, 1)
+  assert.equal(run.combat.audioCues.filter(cue => cue === 'boss.jump_back').length, 1)
+  assert.equal(run.combat.audioCues.filter(cue => cue === 'player.hurt').length, 1)
+
+  const duel = newRun()
+  duel.debugBoss()
+  const target = duel.combat.boss
+  target.z = duel.runner.z + 2
+  target.hp = target.maxHp / 2 + duel.balance.damage
+  assert.equal(duel.tap(), true)
+  assert.equal(target.bossPhase, 2)
+  assert.equal(events(duel.combat, 'rage').length, 1)
 })

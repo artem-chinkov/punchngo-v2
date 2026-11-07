@@ -53,13 +53,14 @@ export class ParkRun {
 
   choose(id: UpgradeId) {
     if (this.phase !== 'upgrade' || !this.offer.includes(id) || !this.combat.take(id)) return false
+    this.combat.audioCues.push('ui.upgrade_select')
     this.offer = []
     this.phase = 'park'
     this.checkLevel()
     return true
   }
 
-  update(dt: number, invulnerable = false) {
+  update(dt: number, invulnerable = false, holdingAttack = false) {
     if (this.phase === 'finisher') {
       this.finishAge += dt
       const boss = this.combat.boss!
@@ -81,6 +82,7 @@ export class ParkRun {
     } else this.support()
 
     this.combat.update(this.runner, this.now, dt, invulnerable)
+    if (holdingAttack) this.combat.holdAttack(this.runner, this.now)
     if (this.combat.hp <= 0) {
       this.phase = 'defeat'
       this.clearInput()
@@ -98,6 +100,7 @@ export class ParkRun {
       if (!this.offer.length) continue
       this.phase = 'upgrade'
       this.clearInput()
+      this.combat.audioCues.push('ui.level_up')
       this.combat.events.push({ kind: 'level', x: this.runner.x, z: this.runner.z })
       return
     }

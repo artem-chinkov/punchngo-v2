@@ -31,6 +31,7 @@ export class ParkView {
     const previous = this.previous
     if (previous && previous.width === width && previous.height === height && previous.horizon === horizon &&
       previous.cameraZ === cameraZ && previous.cameraX === cameraX && previous.curvature === curvature &&
+      previous.cameraHeight === projector.cameraHeight &&
       this.previousDistance === viewDistance && this.previousIntensity === intensity) return
     this.previous = projector
     this.previousDistance = viewDistance

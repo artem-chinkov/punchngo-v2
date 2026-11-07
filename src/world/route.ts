@@ -5,11 +5,12 @@ export const laneX = (lane: Lane) => lane * route.laneWidth
 
 export interface WorldSettings {
   horizon: number
+  cameraHeight: number
   viewDistance: number
   curvature: number
 }
 
-export const defaultWorld: WorldSettings = { horizon: 0.35, viewDistance: 45, curvature: 1 }
+export const defaultWorld: WorldSettings = { horizon: 0.50, cameraHeight: 0, viewDistance: 45, curvature: 1 }
 
 export function roadCenter(z: number): number {
   return 6 * Math.sin(z / 18) + 2.2 * Math.sin(z / 7)

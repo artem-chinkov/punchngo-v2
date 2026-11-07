@@ -1,4 +1,5 @@
 import type { EnemyType, Hand } from '../assets/ids'
+import type { SfxCue } from '../audio/cues'
 import type { Runner } from '../game/Runner'
 import { Build, type UpgradeId } from '../game/upgrades'
 import { route, type Lane } from '../world/route'
@@ -28,6 +29,7 @@ interface Intent { at: number; counter?: Enemy; ideal: boolean }
 export class CombatSystem {
   readonly enemies: Enemy[] = []
   readonly events: CombatEvent[] = []
+  readonly audioCues: SfxCue[] = []
   readonly build = new Build()
   hp: number
   xp = 0
@@ -94,6 +96,19 @@ export class CombatSystem {
     return false
   }
 
+  holdAttack(runner: Runner, now: number) {
+    if (this.hp <= 0 || (this.boss && this.boss.hp <= 0) || this.pending || now < this.nextPunch) return false
+    const threatened = this.enemies.some(enemy => {
+      if (enemy.hp <= 0 || (enemy.pose !== 'telegraph' && enemy.pose !== 'attack')) return false
+      if (enemy.type === 'bulldog') return true
+      const distance = enemy.z - runner.z
+      return distance >= -0.4 && distance <= 5.65 && Math.abs(enemy.x - runner.x) < 0.84
+    })
+    if (threatened) return false
+    this.attack(runner, now, { at: now, ideal: false })
+    return true
+  }
+
   clearInput() {
     this.pending = undefined
     this.lastTap = -Infinity
@@ -113,6 +128,7 @@ export class CombatSystem {
     }
     if (this.hp <= 0 || (this.boss && this.boss.hp <= 0)) return
 
+    const bossPose = this.boss?.pose
     this.ai.update(this.enemies, runner, now, dt, enemy => {
       if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].damage, now, 'attack', runner)
     }, enemy => {
@@ -121,6 +137,13 @@ export class CombatSystem {
       const side = Math.sign(enemy.x - runner.x) || (enemy.id % 2 ? 1 : -1)
       this.impulse(enemy, undefined, 0, side * 5.5, 4.3, now, 0.32)
     })
+
+    const nextBossPose = this.boss?.pose
+    if (nextBossPose !== bossPose) {
+      if (nextBossPose === 'telegraph') this.audioCues.push('boss.windup')
+      else if (nextBossPose === 'attack') this.audioCues.push('boss.attack')
+      else if (nextBossPose === 'retreat') this.audioCues.push('boss.jump_back')
+    }
 
     if (this.hp <= 0) return
     this.collisions(now)
@@ -162,6 +185,7 @@ export class CombatSystem {
 
     if (!target) {
       this.short = 0
+      this.audioCues.push('punch.miss')
       this.emit('miss', runner.x, runner.z + 1.8)
       return
     }
@@ -182,15 +206,21 @@ export class CombatSystem {
       this.score += points
     }
 
+    this.audioCues.push(ideal ? 'counter.perfect' : counter ? 'counter.success' : uppercut ? 'upgrade.uppercut' :
+      hook ? 'punch.hook' : target.type === 'brute' || target.type === 'bulldog' ? 'punch.heavy_hit' : 'punch.hit')
+    if (counter && uppercut) this.audioCues.push('upgrade.uppercut')
     this.hit(target, base * (hook ? 1.5 : 1) * factor, now, kind, points)
     if (target.type !== 'bulldog' || counter || target.hp <= 0) {
       this.impulse(target, chain, 0, hook ? Math.sign(target.x - runner.x) * 2.8 : 0,
         force * (hook ? 1.33 : 1) * (counter ? (ideal ? 1.48 : 1.24) : 1), now, 0.66, uppercut)
       if (counter && target.hp > 0) {
         const stun = (target.type === 'bulldog' ? this.balance.counterStun : this.balance.regularCounterStun) + this.build.stunBonus
-        if (target.type === 'bulldog' && !uppercut) {
-          target.y = Math.max(0.03, target.y)
-          target.vy = 3.4
+        if (target.type === 'bulldog') {
+          this.audioCues.push('boss.stun')
+          if (!uppercut) {
+            target.y = Math.max(0.03, target.y)
+            target.vy = 3.4
+          }
         }
         setPose(target, 'stunned', now, stun)
       }
@@ -198,7 +228,10 @@ export class CombatSystem {
 
     if (!hook) return
     const wave = this.build.rank('wave') > 0
-    if (wave) this.emit('wave', runner.x, target.z)
+    if (wave) {
+      this.audioCues.push('upgrade.shockwave')
+      this.emit('wave', runner.x, target.z)
+    }
     const width = wave ? 2.05 : 1.66
     for (const enemy of this.enemies) {
       if (chain.visited.size >= this.balance.chainTargets) break
@@ -221,6 +254,7 @@ export class CombatSystem {
       }
       if (neighbor) {
         chain.visited.add(neighbor.id)
+        this.audioCues.push('upgrade.electric')
         this.emit('electric', neighbor.x, neighbor.z, neighbor.id, target.x, target.z)
         this.hit(neighbor, base * 0.55, now, 'hit')
         if (neighbor.type !== 'bulldog' || neighbor.hp <= 0) this.impulse(neighbor, chain, 0, 0, force * 0.56, now, 0.50)
@@ -247,7 +281,9 @@ export class CombatSystem {
   }
 
   private hit(enemy: Enemy, damage: number, now: number, kind: Effect, points?: number) {
+    const multiplier = this.multiplier
     this.combo++
+    if (this.multiplier > multiplier) this.audioCues.push('combo.milestone')
     this.comboLeft = this.balance.comboGrace
     this.bestCombo = Math.max(this.bestCombo, this.combo)
     this.events.push({ kind, x: enemy.x, z: enemy.z, enemy: enemy.id, points })
@@ -255,6 +291,7 @@ export class CombatSystem {
     const fire = this.build.rank('fire')
     if (fire && enemy.hp > 0) {
       if (!enemy.burnTicks) {
+        this.audioCues.push('upgrade.fire')
         enemy.burnAt = now + 0.30
         this.emit('fire', enemy.x, enemy.z, enemy.id)
       }
@@ -267,13 +304,14 @@ export class CombatSystem {
     if (enemy.hp <= 0) return
     enemy.hp = Math.max(0, enemy.hp - amount)
     if (enemy.hp > 0) {
-      if (enemy.type === 'bulldog' && enemy.bossPhase === 1 && enemy.hp < enemy.maxHp / 2) {
+      if (enemy.type === 'bulldog' && enemy.bossPhase === 1 && enemy.hp <= enemy.maxHp / 2) {
         enemy.bossPhase = 2
         this.emit('rage', enemy.x, enemy.z, enemy.id)
         if (enemy.pose !== 'telegraph' && enemy.pose !== 'attack' && enemy.pose !== 'stunned') setPose(enemy, 'rage', now, 0.44)
       }
       return
     }
+    if (enemy.type !== 'bulldog') this.audioCues.push('enemy.fall')
     enemy.removeAt = now + 1.24
     enemy.burnTicks = 0
     setPose(enemy, 'fall', now, 0.26)
@@ -338,6 +376,7 @@ export class CombatSystem {
         continue
       }
       chain.visited.add(hit.id)
+      this.audioCues.push('enemy.collision')
       this.score += 25
       this.hit(hit, this.balance.damage * this.balance.chainDamage * this.build.chainDamage, now, 'chain')
       if (hit.type !== 'bulldog' || hit.hp <= 0) {
@@ -356,6 +395,7 @@ export class CombatSystem {
     this.damageCause = enemy.type === 'bulldog' ? 'Удар Бульдога' : cause === 'contact' ? 'Столкновение с врагом' : 'Удар противника'
     this.invulnerableUntil = now + this.balance.immunity
     this.combo = this.short = 0
+    this.audioCues.push('player.hurt')
     this.emit('hurt', runner.x, runner.z + 0.4)
   }
 

@@ -50,7 +50,7 @@ export interface Balance {
 }
 
 export const defaultBalance: Balance = {
-  hp: 100, speed: 6.4, dashMultiplier: 1.8, dashLimit: 2.12, dashDuration: 0.3, laneDuration: 0.18,
+  hp: 100, speed: 6.4, dashMultiplier: 2, dashLimit: 2.12, dashDuration: 0.5, laneDuration: 0.18,
   punchInterval: 0.25, inputBuffer: 0.105, damage: 24, reach: 3.2, knockback: 13,
   chainDamage: 0.5, chainDepth: 2, chainTargets: 5, immunity: 0.8,
   counterWindow: 0.23, idealWindow: 0.075, idealTapGap: 1.35, counterDamage: 1.75, idealDamage: 2.15,

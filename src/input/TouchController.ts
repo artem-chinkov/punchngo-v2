@@ -1,3 +1,5 @@
+const holdDelay = 180
+
 export class TouchController {
   private pointer?: number
   private x = 0
@@ -5,6 +7,7 @@ export class TouchController {
   private since = 0
   private wandered = false
   private swiped = false
+  private held = false
 
   constructor(private readonly canvas: HTMLCanvasElement,
     private readonly enabled: () => boolean,
@@ -19,6 +22,12 @@ export class TouchController {
     canvas.addEventListener('contextmenu', this.preventMenu)
     window.addEventListener('blur', this.cancel)
     document.addEventListener('visibilitychange', this.cancel)
+  }
+
+  isHolding(now = performance.now()) {
+    if (this.pointer === undefined || this.wandered || this.swiped || !this.enabled()) return false
+    if (now - this.since >= holdDelay) this.held = true
+    return this.held
   }
 
   cancel = () => {
@@ -46,7 +55,7 @@ export class TouchController {
     this.x = event.clientX
     this.y = event.clientY
     this.since = event.timeStamp
-    this.wandered = this.swiped = false
+    this.wandered = this.swiped = this.held = false
     this.canvas.setPointerCapture(event.pointerId)
   }
 
@@ -64,7 +73,7 @@ export class TouchController {
   private up = (event: PointerEvent) => {
     if (event.pointerId !== this.pointer) return
     this.move(event)
-    const tap = !this.wandered && !this.swiped && event.timeStamp - this.since <= 320
+    const tap = !this.held && !this.wandered && !this.swiped && event.timeStamp - this.since <= 320
     this.cancel()
     if (tap && this.enabled()) this.attack()
   }
