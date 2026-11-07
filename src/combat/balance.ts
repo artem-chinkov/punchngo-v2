@@ -2,73 +2,65 @@ import type { EnemyType } from '../assets/ids'
 
 export interface EnemyBalance {
   hp: number
+  contact: number
   damage: number
-  approach: number
-  strafe: number
+  speed: number
   windup: number
-  cooldown: number
-  recoil: number
-  retreatInterval: number
-  retreatDistance: number
-  retreatHold: number
-  reward: number
+  recovery: number
+  resistance: number
+  score: number
+  xp: number
 }
 
 export interface Balance {
   hp: number
-  stamina: number
-  hold: number
-  damage: number
-  punchCost: number
-  hookCost: number
+  speed: number
+  dashMultiplier: number
+  dashLimit: number
+  dashDuration: number
+  laneDuration: number
   punchInterval: number
-  postComboInterval: number
+  inputBuffer: number
+  damage: number
   reach: number
-  sector: number
-  blockDrain: number
-  blockCost: number
-  heavyBlockCost: number
-  combatRegen: number
-  travelRegen: number
-  guardBreak: number
-  shortWindow: number
-  comboWindow: number
-  hookDamage: number
-  splashDamage: number
-  splashRadius: number
-  retreatGrace: number
+  knockback: number
+  chainDamage: number
+  chainDepth: number
+  chainTargets: number
+  immunity: number
   counterWindow: number
+  idealWindow: number
+  idealTapGap: number
+  counterDamage: number
+  idealDamage: number
   counterStun: number
-  counterBonus: number
-  counterStamina: number
+  regularCounterStun: number
   counterScore: number
-  comboStamina: number
+  idealScore: number
   attackGap: number
-  combo3: number
-  combo5: number
-  combo10: number
+  comboGrace: number
+  comboDecay: number
+  spawnRate: number
+  density: number
+  bossAt: number
+  rankS: number
+  rankA: number
+  rankB: number
   enemies: Record<EnemyType, EnemyBalance>
 }
 
 export const defaultBalance: Balance = {
-  hp: 100, stamina: 100, hold: 0.18, damage: 15,
-  punchCost: 5, hookCost: 20, punchInterval: 0.16, postComboInterval: 0.5, reach: 3, sector: 0.79,
-  blockDrain: 0, blockCost: 15, heavyBlockCost: 30, combatRegen: 10, travelRegen: 20, guardBreak: 1,
-  shortWindow: 1.2, comboWindow: 2, hookDamage: 1.5, splashDamage: 0.25, splashRadius: 2.1, retreatGrace: 0.35,
-  counterWindow: 0.35, counterStun: 1, counterBonus: 1.5, counterStamina: 8, counterScore: 50,
-  comboStamina: 3, attackGap: 0.76, combo3: 1.5, combo5: 2, combo10: 3,
+  hp: 100, speed: 6.4, dashMultiplier: 1.8, dashLimit: 2.12, dashDuration: 0.3, laneDuration: 0.18,
+  punchInterval: 0.25, inputBuffer: 0.105, damage: 24, reach: 3.2, knockback: 13,
+  chainDamage: 0.5, chainDepth: 2, chainTargets: 5, immunity: 0.8,
+  counterWindow: 0.23, idealWindow: 0.075, idealTapGap: 1.35, counterDamage: 1.75, idealDamage: 2.15,
+  counterStun: 1, regularCounterStun: 0.52, counterScore: 50, idealScore: 100,
+  attackGap: 0.48, comboGrace: 2.5, comboDecay: 0.45, spawnRate: 1, density: 1, bossAt: 140,
+  rankS: 39000, rankA: 31000, rankB: 22500,
   enemies: {
-    thug: {
-      hp: 300, damage: 12, approach: 1.5, strafe: 1.65, windup: 0.5, cooldown: 1, recoil: 0.5, reward: 100,
-      retreatInterval: 4.5, retreatDistance: 0.9, retreatHold: 0.2,
-    },
-    quick: {
-      hp: 150, damage: 8, approach: 5, strafe: 2.6, windup: 0.2, cooldown: 0.2, recoil: 1, reward: 150,
-      retreatInterval: 1, retreatDistance: 2, retreatHold: 0,
-    },
-    brute: {
-      hp: 500, damage: 50, approach: 0.5, strafe: 1.15, windup: 1.17, cooldown: 2.65, recoil: 0.05, reward: 250,
-      retreatInterval: 7, retreatDistance: 0.5, retreatHold: 0.15,
-    },
+    thug: { hp: 33, contact: 5, damage: 15, speed: 0.55, windup: 0.60, recovery: 0.46, resistance: 1, score: 100, xp: 16 },
+    quick: { hp: 23, contact: 5, damage: 15, speed: 1.35, windup: 0.46, recovery: 0.34, resistance: 1.08, score: 150, xp: 21 },
+    brute: { hp: 65, contact: 8, damage: 20, speed: 0.26, windup: 0.76, recovery: 0.60, resistance: 0.67, score: 250, xp: 31 },
+    bulldog: { hp: 1450, contact: 0, damage: 26, speed: 2.1, windup: 0.86, recovery: 0.31, resistance: 0.87, score: 1000, xp: 0 },
   },
 }

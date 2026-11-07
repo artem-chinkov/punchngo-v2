@@ -1,157 +1,214 @@
 import type { CombatEvent } from '../combat/CombatSystem'
-import type { Phase, SandboxRun } from '../game/SandboxRun'
-import { route } from '../world/route'
+import type { ParkRun, Phase } from '../game/ParkRun'
+import type { Records } from '../game/records'
+import { levelXP, upgrades, type UpgradeId } from '../game/upgrades'
 
-const hints: Record<Phase, string> = {
-  ready: '',
-  moving: 'Автоматическое движение',
-  encounter: 'Враги приближаются · дождись цели',
-  combat: 'Тап — удар · удержание — блок',
-  exit: 'Путь свободен',
-  victory: '',
-  defeat: '',
+const counts = new Intl.NumberFormat('ru-RU')
+const time = (value: number) => {
+  const whole = Math.floor(value)
+  return Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0')
 }
 
-const eventLabels: Partial<Record<CombatEvent['kind'], string>> = {
-  counter: 'COUNTER!',
-  miss: 'MISS!',
-  tired: 'НУЖНА ВЫНОСЛИВОСТЬ',
-  block: 'БЛОК',
-  broken: 'БЛОК ПРОБИТ',
-  hurt: 'ПОЛУЧЕН УРОН',
+function set(element: Element, value: string) {
+  if (element.textContent !== value) element.textContent = value
 }
 
 export class HUD {
-  private readonly hp: HTMLElement
-  private readonly face: HTMLElement
-  private readonly progress: HTMLProgressElement
-  private readonly score: HTMLElement
-  private readonly stamina: HTMLProgressElement
-  private readonly staminaText: HTMLElement
-  private readonly chain: HTMLElement
-  private readonly pips: HTMLElement[]
-  private readonly hint: HTMLElement
+  private readonly root: HTMLElement
+  private readonly screen: HTMLElement
+  private readonly display: HTMLElement
+  private readonly values: Record<string, HTMLElement> = {}
+  private readonly health: HTMLProgressElement
+  private readonly xp: HTMLProgressElement
+  private readonly route: HTMLProgressElement
+  private readonly bossHealth: HTMLProgressElement
+  private readonly bossPanel: HTMLElement
+  private readonly portrait: HTMLElement
+  private readonly lane: HTMLElement
+  private readonly pips: HTMLElement
+  private readonly signal: HTMLElement
   private readonly feedback: HTMLElement
-  private readonly overlay: HTMLElement
-  private readonly heading: HTMLElement
-  private readonly guide: HTMLElement
-  private readonly comboPause: HTMLElement
-  private readonly description: HTMLElement
-  private readonly button: HTMLButtonElement
-  private messageUntil = 0
-  private lastPhase?: Phase
+  private readonly combo: HTMLElement
+  private phase?: Phase
+  private previousOffer?: UpgradeId[]
+  private feedbackUntil = 0
+  private previousMultiplier = 1
 
-  constructor(root: HTMLElement, start: () => void) {
-    const hud = document.createElement('div')
-    hud.className = 'hud'
-    hud.innerHTML = `
-      <header class="top-bar">
-        <div class="hp-group">
-          <span class="face" aria-hidden="true"><i></i><b></b></span>
-          <div><small>HP</small><strong data-hp></strong></div>
+  constructor(root: HTMLElement, begin: () => void, choose: (id: UpgradeId) => void) {
+    this.root = document.createElement('div')
+    this.root.className = 'hud'
+    this.root.innerHTML = `
+      <div class="game-display" hidden>
+        <header class="top-bar">
+          <div class="health">
+            <span class="face" aria-hidden="true"><i></i><b></b></span>
+            <div><small>ЗДОРОВЬЕ</small><strong data-value="hp"></strong>
+              <progress data-health max="100" aria-label="Здоровье"></progress></div>
+          </div>
+          <div class="route"><small>PARK / <span data-value="stage"></span></small>
+            <strong data-value="time"></strong><progress data-route max="1" aria-label="Прогресс Park"></progress></div>
+          <div class="points"><small>ОЧКИ</small><strong data-value="score"></strong></div>
+        </header>
+        <div class="boss-hud" hidden>
+          <small>БУЛЬДОГ <span data-value="bossPhase"></span></small>
+          <progress data-boss max="100" aria-label="Здоровье Бульдога"></progress>
         </div>
-        <div class="route"><small>PARK / 01</small><progress aria-label="Пройденный путь" max="1"></progress></div>
-        <div class="points"><small>ОЧКИ</small><strong data-score></strong></div>
-      </header>
-      <div class="feedback"><strong data-combo></strong><b data-feedback></b></div>
-      <footer class="bottom-bar">
-        <div class="tip" data-hint></div>
-        <div class="stamina-label"><span>ВЫНОСЛИВОСТЬ <b data-stamina></b></span><span class="pips" aria-label="Короткая комбинация"><i></i><i></i><i></i></span></div>
-        <progress aria-label="Выносливость" data-stamina-meter></progress>
-      </footer>
-      <div class="round-overlay" hidden>
-        <section class="round-card">
-          <p class="round-kicker">PARK / COMBAT SANDBOX v0.1</p>
-          <h1></h1>
-          <ul class="round-guide" hidden>
-            <li><span aria-hidden="true">👣</span><p><strong>Движение.</strong> Герой сам идёт по парку и останавливается перед врагами.</p></li>
-            <li><span aria-hidden="true">🥊</span><p><strong>Удар.</strong> Коротко тапни по экрану, чтобы ударить. Игра сама выберет цель.</p></li>
-            <li><span aria-hidden="true">🛡️</span><p><strong>Блок.</strong> Удерживай палец на экране, чтобы поднять блок. Каждый заблокированный удар расходует выносливость.</p></li>
-            <li><span aria-hidden="true">❗</span><p><strong>Красный знак.</strong> Враг замахнулся. Приготовься блокировать или дождись жёлтого сигнала.</p></li>
-            <li><span aria-hidden="true">🟡</span><p><strong>Контратака.</strong> Как только знак станет жёлтым, тапни по экрану. Ты прервёшь атаку и оглушишь врага.</p></li>
-            <li><span aria-hidden="true">💥</span><p><strong>Комбо.</strong> Попади три раза подряд. Третий удар — усиленный хук, который может задеть соседей. После него подожди <strong data-combo-pause></strong> до следующего удара. В эту паузу удерживай палец, если нужно поставить блок.</p></li>
-          </ul>
-          <p class="round-copy" hidden></p>
-          <button type="button"></button>
-        </section>
+        <div class="combo-hud"><strong data-combo></strong><span data-feedback></span></div>
+        <footer class="bottom-bar">
+          <div class="signal" data-signal></div>
+          <div class="hud-strip"><span data-value="level"></span>
+            <div class="lane-marker" data-lane aria-label="Полоса"><i></i><i></i><i></i></div>
+            <div class="pips" data-pips aria-label="Короткая серия"><i></i><i></i><i></i></div>
+          </div>
+          <progress data-xp max="1" aria-label="Опыт"></progress>
+        </footer>
       </div>
+      <div class="round-overlay"></div>
     `
-    root.append(hud)
-    this.hp = hud.querySelector('[data-hp]')!
-    this.face = hud.querySelector('.face')!
-    this.progress = hud.querySelector('.route progress')!
-    this.score = hud.querySelector('[data-score]')!
-    this.stamina = hud.querySelector('[data-stamina-meter]')!
-    this.staminaText = hud.querySelector('[data-stamina]')!
-    this.chain = hud.querySelector('[data-combo]')!
-    this.pips = [...hud.querySelectorAll<HTMLElement>('.pips i')]
-    this.hint = hud.querySelector('[data-hint]')!
-    this.feedback = hud.querySelector('[data-feedback]')!
-    this.overlay = hud.querySelector('.round-overlay')!
-    this.heading = hud.querySelector('h1')!
-    this.guide = hud.querySelector('.round-guide')!
-    this.comboPause = hud.querySelector('[data-combo-pause]')!
-    this.description = hud.querySelector('.round-copy')!
-    this.button = hud.querySelector('button')!
-    this.button.addEventListener('click', start)
+    root.append(this.root)
+    this.screen = this.root.querySelector('.round-overlay')!
+    this.display = this.root.querySelector('.game-display')!
+    this.health = this.root.querySelector('[data-health]')!
+    this.xp = this.root.querySelector('[data-xp]')!
+    this.route = this.root.querySelector('[data-route]')!
+    this.bossHealth = this.root.querySelector('[data-boss]')!
+    this.bossPanel = this.root.querySelector('.boss-hud')!
+    this.portrait = this.root.querySelector('.face')!
+    this.lane = this.root.querySelector('[data-lane]')!
+    this.pips = this.root.querySelector('[data-pips]')!
+    this.signal = this.root.querySelector('[data-signal]')!
+    this.feedback = this.root.querySelector('[data-feedback]')!
+    this.combo = this.root.querySelector('[data-combo]')!
+    for (const element of this.root.querySelectorAll<HTMLElement>('[data-value]')) {
+      this.values[element.dataset.value!] = element
+    }
+    this.screen.addEventListener('click', event => {
+      if (!(event.target instanceof HTMLElement)) return
+      const button = event.target.closest('button')
+      if (button?.hasAttribute('data-start')) begin()
+      else if (button?.dataset.upgrade) choose(button.dataset.upgrade as UpgradeId)
+    })
   }
 
   reset() {
-    this.lastPhase = undefined
-    this.messageUntil = 0
-    this.feedback.textContent = ''
+    this.phase = undefined
+    this.previousOffer = undefined
+    this.feedbackUntil = 0
+    this.previousMultiplier = 1
+    set(this.feedback, '')
   }
 
   show(event: CombatEvent, now: number) {
-    const label = eventLabels[event.kind]
+    const label = event.kind === 'ideal' ? 'ИДЕАЛЬНО +' + event.points : event.kind === 'counter' ? 'КОНТРУДАР +' + event.points :
+      event.kind === 'rage' ? 'БУЛЬДОГ В ЯРОСТИ' : event.kind === 'finish' ? 'НОКАУТ!' : ''
     if (!label) return
-    this.feedback.textContent = label
-    this.feedback.dataset.kind = event.kind
-    this.messageUntil = now + 0.66
+    set(this.feedback, label)
+    this.feedback.dataset.effect = event.kind
+    this.feedbackUntil = now + 0.64
   }
 
-  draw(run: SandboxRun, counterReady: boolean) {
-    const { combat, phase, now } = run
+  draw(run: ParkRun, records: Records, preview = false) {
+    const { combat, phase, now, level } = run
+    const boss = combat.boss
     const hp = Math.ceil(combat.hp)
-    const stamina = Math.floor(combat.stamina + 0.001)
-    setText(this.hp, String(hp))
-    const face = hp / combat.balance.hp < 0.35 ? 'critical' : hp / combat.balance.hp < 0.7 ? 'hurt' : 'ready'
-    if (this.face.dataset.face !== face) this.face.dataset.face = face
-    const score = String(combat.score).padStart(4, '0')
-    if (this.score.textContent !== score) {
-      if (combat.score) this.score.animate([{ color: '#ffce68' }, { color: '#ffefd3' }], { duration: 430 })
-      this.score.textContent = score
+    set(this.values.hp, String(hp))
+    this.health.max = run.balance.hp
+    this.health.value = hp
+    const face = combat.hp === 0 ? 'ko' : now < combat.invulnerableUntil ? 'hit' : hp < run.balance.hp * 0.33 ? 'low' : 'ready'
+    if (this.portrait.dataset.face !== face) this.portrait.dataset.face = face
+    set(this.values.time, time(now))
+    set(this.values.stage, boss ? 'ФИНАЛ' : '01')
+    set(this.values.score, counts.format(combat.score))
+    this.route.value = Math.min(1, now / run.balance.bossAt)
+    set(this.values.level, 'УР. ' + level)
+    this.xp.value = Math.max(0, Math.min(1, (combat.xp - levelXP(level)) / (levelXP(level + 1) - levelXP(level))))
+    this.bossPanel.hidden = !boss
+    if (boss) {
+      set(this.values.bossPhase, boss.bossPhase === 2 ? 'II' : 'I')
+      this.bossHealth.max = boss.maxHp
+      this.bossHealth.value = boss.hp
     }
-    this.progress.value = run.z / route.endZ
-    this.stamina.max = combat.balance.stamina
-    this.stamina.value = combat.stamina
-    this.stamina.classList.toggle('broken', now < combat.brokenUntil)
-    setText(this.staminaText, String(stamina))
-    this.pips.forEach((pip, index) => pip.classList.toggle('lit', index < combat.step))
-    this.pips[2].classList.toggle('primed', combat.step === 2)
-    setText(this.chain, combat.combo >= 2 && !run.finished ? `${combat.combo} COMBO  ×${combat.multiplier}` : '')
-    if (now >= this.messageUntil) setText(this.feedback, '')
-    const hint = counterReady ? 'Жёлтый сигнал · тап для контратаки'
-      : combat.blocking ? 'Блок поднят · отпусти для удара' : hints[phase]
-    setText(this.hint, hint)
-    if (phase !== this.lastPhase) {
-      this.lastPhase = phase
-      this.overlay.hidden = phase !== 'ready' && !run.finished
-      this.guide.hidden = phase !== 'ready'
-      this.description.hidden = !run.finished
-      if (phase === 'ready') {
-        this.heading.textContent = "PUNCH 'N' GO"
-        this.comboPause.textContent = combat.balance.postComboInterval.toLocaleString('ru-RU') + ' с'
-        this.button.textContent = 'Начать бой'
-      } else if (run.finished) {
-        this.heading.textContent = phase === 'victory' ? 'Путь свободен' : 'Нокаут'
-        this.description.textContent = `Очки: ${combat.score} · Лучшее комбо: ${combat.bestCombo}`
-        this.button.textContent = 'Сыграть ещё'
-      }
+    const lane = String(run.runner.lane + 1)
+    if (this.lane.dataset.selected !== lane) this.lane.dataset.selected = lane
+    const pips = String(combat.short)
+    if (this.pips.dataset.lit !== pips) this.pips.dataset.lit = pips
+    const counter = combat.counterTarget(run.runner, now)
+    set(this.signal, counter ? 'ЖЁЛТЫЙ · ТАП ДЛЯ КОНТРАТАКИ' :
+      boss ? 'БУЛЬДОГ · СЛЕДИ ЗА ЗАМАХОМ' : now < 19 ? 'ТАП — УДАР   /   СВАЙП — ПОЛОСА' : '')
+    this.signal.classList.toggle('counter-ready', !!counter)
+    set(this.combo, combat.combo > 1 ? combat.combo + ' COMBO ×' + counts.format(combat.multiplier) : '')
+    if (combat.multiplier !== this.previousMultiplier) {
+      if (combat.multiplier > this.previousMultiplier) this.combo.animate([
+        { transform: 'scale(1.34)', color: '#fff49a' }, { transform: 'scale(1)' },
+      ], { duration: 320 })
+      this.previousMultiplier = combat.multiplier
     }
-  }
-}
+    if (run.visualTime >= this.feedbackUntil) set(this.feedback, '')
+    this.screen.hidden = preview || (phase !== 'ready' && phase !== 'upgrade' && !run.finished)
+    if (phase === this.phase && run.offer === this.previousOffer) return
 
-function setText(element: HTMLElement, text: string) {
-  if (element.textContent !== text) element.textContent = text
+    this.phase = phase
+    this.previousOffer = run.offer
+    this.display.hidden = phase === 'ready'
+    if (phase === 'ready') this.menu(records)
+    else if (phase === 'upgrade') this.level(run)
+    else if (run.finished) this.result(run, records)
+  }
+
+  private menu(records: Records) {
+    this.screen.innerHTML = `
+      <section class="round-card intro">
+        <p class="round-kicker"><span></span> ARCADE / PARK RUN <b>V2.0</b></p>
+        <h1>PUNCH <em>’N’</em><br>GO<span>.</span></h1>
+        <p class="menu-copy">Пробеги парк. Разбей группы врагов. Встреть Бульдога.</p>
+        <ul class="round-guide">
+          <li><b>01</b><p><strong>Тап.</strong> Удар и рывок вперёд.</p></li>
+          <li><b>02</b><p><strong>Свайп.</strong> Смени полосу влево или вправо.</p></li>
+          <li><b>03</b><p><strong>Жёлтый сигнал.</strong> Тапни, чтобы перебить атаку.</p></li>
+        </ul>
+        ${records.best ? '<p class="record">РЕКОРД <strong>' + counts.format(records.best.score) + '</strong></p>' : ''}
+        <button type="button" data-start>Начать забег <span aria-hidden="true">➜</span></button>
+      </section>`
+  }
+
+  private level(run: ParkRun) {
+    this.screen.innerHTML = `
+      <section class="round-card level-card" aria-label="Выбор улучшения">
+        <p class="round-kicker">УЛУЧШЕНИЕ / УРОВЕНЬ ${run.level}</p>
+        <h2>Выбери усиление</h2>
+        <div class="upgrades">${run.offer.map(id => {
+          const item = upgrades[id]
+          const rank = run.combat.build.rank(id)
+          return `<button class="upgrade" type="button" data-upgrade="${id}">
+            <b class="upgrade-icon" aria-hidden="true">${item.icon}</b>
+            <span><strong>${item.name}</strong><small>${item.text}</small></span>
+            <span class="upgrade-rank">${rank} → ${rank + 1} / ${item.max}</span>
+          </button>`
+        }).join('')}</div>
+      </section>`
+  }
+
+  private result(run: ParkRun, records: Records) {
+    const result = run.result()
+    this.screen.innerHTML = `
+      <section class="round-card result-card">
+        <p class="round-kicker">PARK / РЕЗУЛЬТАТ</p>
+        <div class="result-heading"><h2>${result.won ? 'Парк пройден' : 'Нокаут'}</h2>
+          <strong class="rank" aria-label="Ранг ${result.rank}">${result.rank}</strong></div>
+        ${result.won ? '' : '<p class="result-cause"></p>'}
+        <div class="result-score">${counts.format(result.score)} <small>ОЧКОВ</small></div>
+        <dl class="result-stats">
+          <div><dt>Повержено</dt><dd>${result.kills}</dd></div>
+          <div><dt>Лучшее комбо</dt><dd>${result.bestCombo}</dd></div>
+          <div><dt>Контратаки</dt><dd>${result.counters}</dd></div>
+          <div><dt>Идеальные</dt><dd>${result.perfect}</dd></div>
+          <div><dt>Осталось HP</dt><dd>${result.hp}</dd></div>
+          <div><dt>Время</dt><dd>${time(result.time)}</dd></div>
+        </dl>
+        ${records.best ? '<p class="record">РЕКОРД <strong>' + counts.format(records.best.score) + '</strong></p>' : ''}
+        <button type="button" data-start>Новый забег <span aria-hidden="true">➜</span></button>
+      </section>`
+    const cause = this.screen.querySelector('.result-cause')
+    if (cause) set(cause, result.cause)
+  }
 }

@@ -1,22 +1,20 @@
-export const route = {
-  stopZ: 16,
-  endZ: 27,
-  halfWidth: 2.35,
-}
+export type Lane = -1 | 0 | 1
+export const lanes: readonly Lane[] = [-1, 0, 1]
+export const route = { halfWidth: 2.65, laneWidth: 1.63 }
+export const laneX = (lane: Lane) => lane * route.laneWidth
 
 export interface WorldSettings {
-  speed: number
   horizon: number
   viewDistance: number
   curvature: number
 }
 
-export const defaultWorld: WorldSettings = { speed: 3, horizon: 0.22, viewDistance: 54, curvature: 1 }
+export const defaultWorld: WorldSettings = { horizon: 0.35, viewDistance: 45, curvature: 1 }
 
 export function roadCenter(z: number): number {
-  return 3.5 * Math.sin(z / 7) + 1.2 * Math.sin(z / 3.8)
+  return 6 * Math.sin(z / 18) + 2.2 * Math.sin(z / 7)
 }
 
 export function roadHeading(z: number): number {
-  return 3.5 / 7 * Math.cos(z / 7) + 1.2 / 3.8 * Math.cos(z / 3.8)
+  return 6 / 18 * Math.cos(z / 18) + 2.2 / 7 * Math.cos(z / 7)
 }

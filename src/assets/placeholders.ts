@@ -7,9 +7,13 @@ const palette: Record<EnemyType, [number, number, number, number]> = {
   thug: [0xbd4b38, 0xef7a55, 0xd98b62, 0x24373c],
   quick: [0x227e88, 0x58c6bb, 0xe7b483, 0x263341],
   brute: [0x694775, 0xa476a4, 0xba724f, 0x3e3648],
+  bulldog: [0x724639, 0xe58848, 0xdba16b, 0x343342],
 }
 
-export function drawPlaceholder(g: Graphics, id: AssetId, w: number, h: number) {
+export const cycles = ['stride', 'guard', 'jab', 'flinch'] as const
+export type Cycle = typeof cycles[number]
+
+export function drawPlaceholder(g: Graphics, id: AssetId, w: number, h: number, motion?: Cycle, frame = 0) {
   if (id === 'park.sky') {
     g.fillStyle(0xe8bd83).fillRect(0, 0, w, h)
     g.fillStyle(0xf3ce92).fillRect(0, h * 0.32, w, h * 0.68)
@@ -33,6 +37,15 @@ export function drawPlaceholder(g: Graphics, id: AssetId, w: number, h: number) 
     g.fillStyle(0x326345).fillEllipse(52, 62, 94, 77).fillEllipse(83, 37, 87, 69)
     g.fillStyle(0x508251).fillEllipse(51, 48, 62, 48).fillEllipse(86, 26, 59, 44)
     g.fillStyle(0x769356).fillEllipse(48, 41, 33, 15)
+    return
+  }
+  if (id === 'park.lamp') {
+    g.fillStyle(0x252c26).fillRect(24, 36, 8, 164).fillRect(17, 195, 22, 12)
+    g.fillStyle(0x586257).fillRect(25, 42, 3, 151)
+    g.fillStyle(0x252c26).fillTriangle(9, 21, 27, 4, 47, 21)
+    g.fillStyle(0x252c26).fillRect(13, 20, 30, 25)
+    g.fillStyle(0xffc866).fillRect(18, 22, 20, 18)
+    g.fillStyle(0xffe3a6).fillRect(23, 23, 9, 16)
     return
   }
   if (id === 'park.bench') {
@@ -60,29 +73,60 @@ export function drawPlaceholder(g: Graphics, id: AssetId, w: number, h: number) 
   }
 
   const [shirt, light, skin, pants] = palette[id]
-  const x = w / 2
-  const body = w * 0.68
-  const head = w * (id === 'brute' ? 0.44 : 0.49)
-  const headY = h * 0.20
-  g.fillStyle(ink).fillRoundedRect(x - body * 0.44, h * 0.59, body * 0.88, h * 0.38, 9)
-  g.fillStyle(pants).fillRoundedRect(x - body * 0.39, h * 0.60, body * 0.78, h * 0.34, 7)
-  g.fillStyle(ink).fillRect(x - 3, h * 0.76, 6, h * 0.22)
-  g.fillRoundedRect(x - body * 0.48, h * 0.90, body * 0.45, h * 0.08, 5)
-  g.fillRoundedRect(x + body * 0.04, h * 0.90, body * 0.45, h * 0.08, 5)
-  g.fillRoundedRect(x - body / 2 - 4, h * 0.32, body + 8, h * 0.37, 15)
-  g.fillStyle(shirt).fillRoundedRect(x - body / 2, h * 0.32, body, h * 0.34, 12)
-  g.fillStyle(light).fillRoundedRect(x - body * 0.30, h * 0.36, body * 0.60, 9, 4)
+  const boss = id === 'bulldog'
+  const x = Math.round(w / 2)
+  const torso = w * (boss ? 0.65 : 0.60)
+  const head = w * (boss ? 0.42 : id === 'brute' ? 0.42 : 0.44)
+  const walking = motion === 'stride'
+  const guarding = motion === 'guard'
+  const jabbing = motion === 'jab'
+  const flinch = motion === 'flinch'
+  const cycle = [0, 1, 0, -1][frame % 4]
+  const headY = h * 0.23 + (walking ? Math.abs(cycle) * -4 : guarding ? 4 + cycle * 2 : flinch ? -3 + cycle * 2 : 0)
+  const bodyY = headY + h * 0.135
+  const legTop = h * 0.61
+  const outline = 0x171e22
   for (const side of [-1, 1]) {
-    const armX = x + side * (body / 2 + 1)
-    g.fillStyle(ink).fillEllipse(armX, h * 0.49, w * 0.29, h * 0.29)
-    g.fillStyle(shirt).fillEllipse(armX, h * 0.46, w * 0.22, h * 0.21)
-    g.fillStyle(skin).fillEllipse(armX + side * 3, h * 0.54, w * 0.21, h * 0.12)
+    const leg = x + torso * 0.20 * side
+    const step = walking ? cycle * side * 8 : flinch ? side * 4 : 0
+    g.lineStyle(Math.round(torso * 0.34), outline).lineBetween(leg, legTop, leg + step, h * 0.912 - Math.max(0, step / 2))
+    g.lineStyle(Math.round(torso * 0.24), pants).lineBetween(leg, legTop, leg + step, h * 0.896 - Math.max(0, step / 2))
+    g.fillStyle(outline).fillRect(leg + step - torso * 0.16, h * 0.91 - Math.max(0, step / 2), torso * 0.33, h * 0.065)
+    g.fillStyle(0x535657).fillRect(leg + step - torso * 0.14, h * 0.93 - Math.max(0, step / 2), torso * 0.27, 3)
   }
-  g.fillStyle(ink).fillEllipse(x, headY, head + 8, h * 0.31)
-  g.fillStyle(skin).fillRoundedRect(x - head / 2, headY - h * 0.10, head, h * 0.22, 10)
-  g.fillStyle(0x382d29).fillRoundedRect(x - head / 2 - 1, headY - h * 0.14, head + 2, h * 0.09, 6)
-  if (id === 'quick') g.fillStyle(light).fillRect(x - head / 2 - 3, headY - h * 0.062, head + 6, 5)
-  g.fillStyle(ink).fillRect(x - head * 0.32, headY - 2, 8, 4).fillRect(x + head * 0.32 - 8, headY - 2, 8, 4)
-  g.fillRect(x - 6, headY + h * 0.065, 12, 3)
-  if (id === 'brute') g.fillStyle(0xffc27a).fillRect(x - 11, h * 0.47, 22, 6)
+  g.fillStyle(outline).fillRoundedRect(x - torso / 2 - 4, bodyY, torso + 8, h * 0.315, 10)
+  g.fillStyle(shirt).fillRoundedRect(x - torso / 2, bodyY + 3, torso, h * 0.285, 7)
+  g.fillStyle(light).fillRect(x - torso * 0.28, bodyY + 8, torso * 0.56, 6)
+  g.fillStyle(outline, 0.58).fillRect(x - torso * 0.4, bodyY + h * 0.245, torso * 0.8, 6)
+  if (boss) {
+    g.fillStyle(0xffcf70).fillRect(x - 14, bodyY + 18, 28, 10)
+    g.fillStyle(0x744132).fillRect(x - 5, bodyY + 18, 10, 10)
+  }
+  for (const side of [-1, 1]) {
+    const shoulder = x + side * torso * 0.51
+    const strike = jabbing && side === (frame < 2 ? -1 : 1)
+    const fistX = shoulder + side * (strike ? -torso * 0.28 : flinch ? 9 : guarding ? -4 : 4)
+    const fistY = bodyY + h * (strike ? 0.045 : guarding ? 0.072 : flinch ? 0.12 : 0.21) +
+      (walking ? side * cycle * 9 : guarding || flinch ? cycle * side * 4 : 0)
+    const size = Math.round(w * (strike ? 0.30 : boss ? 0.24 : 0.19))
+    g.lineStyle(Math.round(w * 0.19), outline).lineBetween(shoulder, bodyY + 12, fistX, fistY)
+    g.lineStyle(Math.round(w * 0.135), shirt).lineBetween(shoulder, bodyY + 12, fistX, fistY)
+    g.fillStyle(outline).fillRoundedRect(fistX - size / 2 - 2, fistY - size / 2 - 2, size + 4, size + 4, 5)
+    g.fillStyle(boss ? 0x9b4032 : skin).fillRoundedRect(fistX - size / 2, fistY - size / 2, size, size, 4)
+    g.fillStyle(light).fillRect(fistX - size / 3, fistY - size / 3, size * 0.58, 3)
+  }
+  g.fillStyle(outline).fillRoundedRect(x - head / 2 - 3, headY - h * 0.112, head + 6, h * 0.22, 7)
+  g.fillStyle(skin).fillRoundedRect(x - head / 2, headY - h * 0.10, head, h * 0.19, 5)
+  g.fillStyle(boss ? 0x463331 : 0x352e2d).fillRect(x - head / 2, headY - h * 0.104, head, h * 0.055)
+  if (boss) {
+    g.fillStyle(0x493333).fillRect(x - head * 0.58, headY - 20, 13, 17).fillRect(x + head * 0.40, headY - 20, 13, 17)
+    g.fillStyle(0xf7d2a1).fillRoundedRect(x - head * 0.40, headY + 2, head * 0.80, 17, 5)
+    g.fillStyle(0x59362d).fillRect(x - 7, headY + 1, 14, 5).fillRect(x - 12, headY + 12, 24, 3)
+    g.fillStyle(0xffedc2).fillRect(x - 10, headY + 10, 4, 5).fillRect(x + 6, headY + 10, 4, 5)
+  } else {
+    if (id === 'quick') g.fillStyle(light).fillRect(x - head / 2 - 2, headY - h * 0.051, head + 4, 5)
+    g.fillStyle(outline).fillRect(x - 6, headY + h * 0.055, 12, flinch ? 5 : 3)
+    if (id === 'brute') g.fillStyle(0xf1c981).fillRect(x - 12, bodyY + 20, 24, 6)
+  }
+  g.fillStyle(outline).fillRect(x - head * 0.33, headY - 3, 9, 4).fillRect(x + head * 0.33 - 9, headY - 3, 9, 4)
 }

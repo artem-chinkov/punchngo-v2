@@ -1,185 +1,323 @@
 import type Phaser from 'phaser'
 import type { AssetRegistry } from '../assets/AssetRegistry'
-import type { AssetId, Hand, HandPose } from '../assets/ids'
-import type { CombatEvent } from '../combat/CombatSystem'
-import { inCounterWindow, type Enemy } from '../combat/EnemyAI'
-import type { SandboxRun } from '../game/SandboxRun'
+import type { AnimationState, EnemyPose, EnemyType, Hand, HandPose } from '../assets/ids'
+import type { CombatEvent, Effect, Strike } from '../combat/CombatSystem'
+import { createEnemy, type Enemy } from '../combat/EnemyAI'
+import type { ParkRun } from '../game/ParkRun'
+import { route } from '../world/route'
 import type { PerspectiveProjector } from './PerspectiveProjector'
 
-interface Impact {
-  enemy: Enemy
-  at: number
-  color: number
-  radius: number
+const hands = ['left', 'right'] as const
+const colors: Record<Effect, number> = {
+  hit: 0xffefbd, hook: 0xffa554, counter: 0xffdc66, ideal: 0xfff383, chain: 0x73efd1,
+  air: 0xf7d17d, wave: 0xffb975, electric: 0x84efff, fire: 0xff7537, hurt: 0xf05142,
+  miss: 0xe5dbac, rage: 0xf34a49, finish: 0xffcf60, level: 0x9effce,
 }
+interface Particle extends CombatEvent { at: number }
+interface Slot {
+  image: Phaser.GameObjects.Image
+  id: number
+  seen: number
+  freezeUntil: number
+  frozeAt: number
+}
+export interface AnimationPreview { type: EnemyType | 'hero'; pose: AnimationState; start: number }
 
 export class CombatView {
-  private readonly enemies = new Map<Enemy, Phaser.GameObjects.Image>()
+  private readonly slots: Slot[] = []
   private readonly fists: Record<Hand, Phaser.GameObjects.Image>
-  private readonly handState: Record<Hand, { pose: HandPose; since: number; guard: number }> = {
-    left: { pose: 'idle', since: 0, guard: 0 },
-    right: { pose: 'idle', since: 0, guard: 0 },
-  }
-  private lastFistFrame = 0
   private readonly marks: Phaser.GameObjects.Graphics
   private readonly effects: Phaser.GameObjects.Graphics
   private readonly shadows: Phaser.GameObjects.Graphics
-  private readonly impacts: Impact[] = []
-  private flash?: { at: number; color: number }
+  private readonly previewImage: Phaser.GameObjects.Image
+  private readonly previewEnemy = createEnemy(-1, 'thug', 0, 0, 100, 0)
+  private readonly particles: Particle[] = []
+  private frame = 0
+  private hurtAt = -Infinity
+  private defeatAt = -Infinity
 
   constructor(scene: Phaser.Scene, private readonly assets: AssetRegistry) {
     this.shadows = scene.add.graphics().setDepth(-9998)
     this.marks = scene.add.graphics().setDepth(1)
     this.effects = scene.add.graphics().setDepth(2)
-    this.fists = {
-      left: assets.image('fist.left').setDepth(3),
-      right: assets.image('fist.right').setDepth(3),
-    }
+    this.fists = { left: assets.image('fist.left').setDepth(3), right: assets.image('fist.right').setDepth(3) }
+    this.previewImage = assets.image('thug').setVisible(false)
+    for (let i = 0; i < 15; i++) this.slots.push(this.newSlot())
   }
 
-  reset(enemies: Enemy[]) {
-    for (const image of this.enemies.values()) image.destroy()
-    this.enemies.clear()
-    this.impacts.length = 0
-    this.flash = undefined
-    for (const state of Object.values(this.handState)) {
-      state.pose = 'idle'
-      state.guard = 0
-      state.since = this.lastFistFrame
+  reset() {
+    for (const slot of this.slots) {
+      slot.id = 0
+      slot.freezeUntil = 0
+      slot.image.setVisible(false)
     }
-    for (const enemy of enemies) this.enemies.set(enemy, this.assets.image(enemy.type))
+    this.particles.length = 0
+    this.hurtAt = this.defeatAt = -Infinity
   }
 
   show(event: CombatEvent, now: number) {
-    if ('enemy' in event) {
-      if (event.kind === 'ko') return
-      const color = event.kind === 'counter' ? 0xffdb58 : event.kind === 'splash' ? 0xf59b60 : 0xfff3c5
-      this.impacts.push({ enemy: event.enemy, at: now, color, radius: event.kind === 'splash' ? 17 : 27 })
-    } else if (event.kind === 'hurt' || event.kind === 'broken' || event.kind === 'block') {
-      this.flash = { at: now, color: event.kind === 'block' ? 0x78ceca : 0xd53f37 }
+    if (event.kind === 'hurt') this.hurtAt = now
+    else {
+      if (this.particles.length >= 30) this.particles.shift()
+      this.particles.push({ ...event, at: now })
+      if (event.enemy !== undefined && (event.kind === 'hit' || event.kind === 'hook' ||
+        event.kind === 'counter' || event.kind === 'ideal' || event.kind === 'chain')) {
+        const slot = this.slots.find(item => item.id === event.enemy)
+        if (slot) {
+          slot.frozeAt = now
+          slot.freezeUntil = now + (event.kind === 'ideal' || event.kind === 'hook' ? 0.075 : 0.047)
+        }
+      }
     }
   }
 
-  draw(run: SandboxRun, projector: PerspectiveProjector, visualTime: number, debug: boolean) {
-    const { now, combat } = run
-    const { width, height } = projector
+  draw(run: ParkRun, projector: PerspectiveProjector, wall: number, debug: boolean, preview?: AnimationPreview) {
+    this.frame++
+    this.shadows.clear()
     this.marks.clear()
     this.effects.clear()
-    this.shadows.clear()
-    if (debug) this.drawSector(run, projector)
-
-    for (const [enemy, image] of this.enemies) {
+    this.previewImage.setVisible(false)
+    const { width, height } = projector
+    const now = run.visualTime
+    const counter = run.combat.counterTarget(run.runner, run.now)
+    if (debug) this.drawZones(run, projector)
+    for (const enemy of run.combat.enemies) {
       const point = projector.project(enemy.x, enemy.z)
-      const elapsed = now - enemy.since
-      const dying = enemy.pose === 'defeated'
-      const visible = point.visible && (!dying || elapsed < 0.45)
-      image.setVisible(visible)
-      if (!visible) continue
-
-      const counter = inCounterWindow(enemy, now, combat.balance)
-      const moving = enemy.pose === 'approach' || enemy.pose === 'positioning' || enemy.pose === 'withdraw'
-      const gait = Math.sin(visualTime * (moving ? 14 : 4) + enemy.lane * 2)
-      const flinch = Math.max(0, 1 - (now - enemy.lastHit) / 0.17)
-      const attacking = enemy.pose === 'attack' ? Math.sin(Math.min(1, elapsed / 0.18) * Math.PI) : 0
-      const winding = enemy.pose === 'telegraph' ? Math.min(1, elapsed * 2) : 0
-      const drop = dying ? Math.min(1, elapsed / 0.45) : 0
-      const scale = point.scale * 1.15
-      this.assets.pose(image, enemy.type, enemy.pose, enemy.pose === 'idle' ? visualTime : elapsed)
-      this.assets.place(image, enemy.type, point.x + flinch * 5, point.y + drop * 16,
-        scale * (1 + attacking * 0.16), scale * (1 + gait * 0.024 + attacking * 0.18 - drop * 0.72))
-      image.setDepth(-point.distance * 10).setAlpha(1 - drop)
-        .setRotation(winding * -0.09 + attacking * 0.10 + flinch * 0.12 + drop * 0.25)
-      this.shadows.fillStyle(0x41382d, 0.30 * (1 - drop))
-        .fillEllipse(point.x, point.y, 68 * scale, 16 * scale)
-      if (dying) continue
-
-      const top = point.y - image.displayHeight
-      if (combat.target === enemy && run.fighting) {
-        this.marks.lineStyle(2, counter ? 0xffe263 : 0xffe6b1, 0.9)
-          .strokeEllipse(point.x, point.y + 1, 77 * scale, 19 * scale)
+      if (!point.visible || point.x < -140 || point.x > width + 140) continue
+      let slot = this.slots.find(item => item.id === enemy.id)
+      if (!slot) {
+        slot = this.slots.find(item => item.id === 0)
+        if (!slot) {
+          slot = this.newSlot()
+          this.slots.push(slot)
+        }
+        slot.id = enemy.id
+        slot.freezeUntil = 0
       }
-      if (enemy.pose === 'telegraph') this.warning(point.x, top - 16, counter)
-      if (enemy.pose === 'stunned') {
-        this.marks.fillStyle(0xffdc75)
-        for (let i = -1; i <= 1; i++) this.marks.fillCircle(point.x + i * 7, top - 8 - (i === 0 ? 4 : 0), 2)
-      }
-      if (now - enemy.lastHit < 1.5) {
-        this.marks.fillStyle(0x252825).fillRoundedRect(point.x - 23, top + 3, 46, 5, 2)
-        this.marks.fillStyle(0xef8460).fillRoundedRect(point.x - 22, top + 4, 44 * enemy.hp / enemy.maxHp, 3, 1)
-      }
+      slot.seen = this.frame
+      const poseTime = now < slot.freezeUntil ? slot.frozeAt : now
+      this.actor(slot.image, enemy, point, poseTime, counter === enemy, run)
+    }
+    for (const slot of this.slots) if (slot.seen !== this.frame && slot.id) {
+      slot.id = 0
+      slot.image.setVisible(false)
     }
 
-    for (const impact of this.impacts) {
-      const progress = (now - impact.at) / 0.32
-      if (progress >= 1) continue
-      const point = projector.project(impact.enemy.x, impact.enemy.z)
-      if (!point.visible) continue
-      const y = point.y - 100 * point.scale
-      const radius = impact.radius * (0.46 + progress)
-      this.effects.lineStyle(2, impact.color, 1 - progress).strokeCircle(point.x, y, radius * 0.58)
-      for (let i = 0; i < 7; i++) {
-        const angle = i * 6.283 / 7
+    this.drawParticles(projector, now)
+    const hurt = Math.max(0, 1 - (now - this.hurtAt) / 0.29)
+    if (hurt) this.effects.lineStyle(13, colors.hurt, hurt * 0.59).strokeRect(4, 4, width - 8, height - 8)
+    const dash = Math.min(1, run.runner.dash * 1.28)
+    if (run.active && dash > 0.06) {
+      for (let i = 0; i < 11; i++) {
+        const side = i % 2 ? 1 : -1
+        const travel = (now * 2.7 + i * 0.219) % 1
+        const x = width / 2 + side * (width * (0.29 + travel * 0.25))
+        const y = height * (0.21 + (i % 6) * 0.105 + travel * 0.15)
+        this.effects.lineStyle(i % 3 === 0 ? 2 : 1, 0xffeac0, (1 - travel) * dash * 0.50)
+          .lineBetween(x, y, x + side * (11 + travel * 34), y + 6 + travel * 15)
+      }
+    }
+    this.drawFists(run, width, height, wall, hurt, preview)
+    if (preview && preview.type !== 'hero') {
+      const demo = this.previewEnemy
+      const age = (wall - preview.start) % 1.7
+      demo.type = preview.type
+      demo.pose = preview.pose as EnemyPose
+      demo.since = -age
+      demo.until = 0.6 - age
+      demo.y = demo.pose === 'airborne' || demo.pose === 'finish' ? Math.sin(age / 1.7 * Math.PI) * 1.6 : 0
+      demo.hp = demo.pose === 'fall' || demo.pose === 'defeated' ? 0 : 100
+      this.actor(this.previewImage, demo, projector.project(projector.cameraX, projector.cameraZ + 2.4), 0,
+        demo.pose === 'telegraph' && age > 0.5, run)
+      this.previewImage.setDepth(0)
+    }
+  }
+
+  private newSlot(): Slot {
+    return { image: this.assets.image('thug').setVisible(false), id: 0, seen: -1, freezeUntil: 0, frozeAt: 0 }
+  }
+
+  private actor(image: Phaser.GameObjects.Image, enemy: Enemy, point: ReturnType<PerspectiveProjector['project']>,
+    now: number, counter: boolean, run: ParkRun) {
+    const { pose, type } = enemy
+    const age = Math.max(0, now - enemy.since)
+    const moving = pose === 'approach' || pose === 'positioning' || pose === 'retreat'
+    const gait = Math.sin(age * (type === 'quick' ? 19 : 13))
+    const pulse = Math.sin(Math.min(1, age / 0.18) * Math.PI)
+    const fall = pose === 'fall' ? Math.min(1, age / 0.56) : pose === 'defeated' ? 1 : 0
+    const scale = Math.min(1.34, point.scale * (type === 'bulldog' ? 1.30 : 1.04))
+    let rotation = moving ? gait * 0.065 : 0
+    let stretchX = 1
+    let stretchY = 1 + (moving ? Math.abs(gait) * 0.052 : Math.sin(now * 5 + enemy.id) * 0.019)
+    let x = point.x
+    let y = point.y - enemy.y * scale * 49
+    if (pose === 'telegraph' || pose === 'laneTell') {
+      stretchY *= 1 - Math.min(1, age * 6) * 0.12
+      rotation = pose === 'laneTell' ? Math.sign(enemy.destination - enemy.lane) * 0.16 : -0.085
+    } else if (pose === 'attack') {
+      stretchX += pulse * 0.24
+      stretchY += pulse * 0.20
+      rotation = pulse * 0.15
+      y += pulse * 11 * scale
+    } else if (pose === 'sideFlight' || pose === 'knockback' || pose === 'hit' || pose === 'airborne') {
+      rotation = (Math.sign(enemy.vx) || 1) * (pose === 'airborne' ? age * 1.9 : Math.max(0.10, 0.46 - age * 0.45))
+      stretchX += Math.max(0, 1 - age * 8) * 0.20
+      stretchY -= Math.max(0, 1 - age * 8) * 0.11
+    } else if (pose === 'retreat' && type === 'bulldog') {
+      const leap = Math.sin(Math.min(1, age / 0.55) * Math.PI)
+      y -= leap * 40 * scale
+      rotation = -leap * 0.18
+    } else if (pose === 'stunned') {
+      rotation = Math.sin(age * 25) * 0.12
+      x += Math.sin(age * 28) * 3 * scale
+    } else if (pose === 'recovery') stretchY -= Math.max(0, 1 - age * 4) * 0.11
+    else if (pose === 'rage') {
+      rotation = Math.sin(age * 36) * 0.075
+      stretchX += Math.sin(age * 14) * 0.13
+    } else if (pose === 'finish') rotation = age * 5.8
+    if (fall) {
+      rotation = (enemy.id % 2 ? 1 : -1) * fall * 1.47
+      stretchY *= 1 - fall * 0.25
+    }
+    this.assets.pose(image, type, pose, age)
+    this.assets.place(image, type, x, y, scale * stretchX, scale * stretchY)
+    image.setVisible(true).setDepth(-point.distance * 10)
+      .setAlpha((1 - fall * 0.96) * (pose === 'finish' ? Math.max(0.15, 1 - age * 1.4) : 1))
+      .setRotation(rotation)
+    this.shadows.fillStyle(0x342921, 0.30 * (1 - fall) / (1 + enemy.y))
+      .fillEllipse(point.x, point.y + 1, 67 * scale, 14 * scale)
+    if (enemy.hp <= 0) return
+    const top = y - image.displayHeight - 7
+    if (pose === 'telegraph') this.warning(x, top, counter, enemy.until - run.now <= run.balance.idealWindow)
+    if (pose === 'laneTell') {
+      const side = Math.sign(enemy.destination - enemy.lane)
+      this.marks.fillStyle(0x272622).fillCircle(x, top, 10)
+      this.marks.fillStyle(0x88e8dd).fillTriangle(x - side * 4, top - 5, x + side * 6, top, x - side * 4, top + 5)
+    }
+    if (pose === 'stunned' || pose === 'rage') {
+      const color = pose === 'rage' ? colors.rage : 0xffd765
+      this.marks.fillStyle(color)
+      for (let i = -1; i <= 1; i++) this.marks.fillCircle(x + i * 9, top + Math.sin(age * 15 + i) * 3, 2.3)
+    }
+    if (enemy.burnTicks) {
+      for (let i = 0; i < 5; i++) {
+        const life = (now * 3 + i * 0.22) % 1
+        this.effects.fillStyle(i % 2 ? 0xffc15d : 0xff6a38, 0.9 * (1 - life))
+          .fillRect(x + (i - 2) * 8 * scale, y - image.displayHeight * 0.40 - life * 42 * scale, 4, 6)
+      }
+    }
+  }
+
+  private drawFists(run: ParkRun, width: number, height: number, wall: number, hurt: number, preview?: AnimationPreview) {
+    const now = run.visualTime
+    if (run.phase === 'defeat' && this.defeatAt === -Infinity) this.defeatAt = wall
+    const knockout = Math.max(0, Math.min(1, (wall - this.defeatAt) / 0.5))
+    const demoAge = preview?.type === 'hero' ? (wall - preview.start) % 0.85 : 0
+    const demoHurt = preview?.type === 'hero' && preview.pose === 'hurt' ? Math.max(0, 1 - demoAge * 3) : hurt
+    const fall = run.phase === 'defeat' ? knockout : preview?.type === 'hero' && preview.pose === 'knockout' ?
+      Math.min(1, demoAge / 0.52) : 0
+    for (const hand of hands) {
+      const image = this.fists[hand]
+      const side = hand === 'left' ? -1 : 1
+      let strike: Strike | undefined = run.combat.strike?.hand === hand ? run.combat.strike : undefined
+      let age = strike ? now - strike.at : 1
+      let pose: HandPose = run.active ? run.runner.dash > 0.3 ? 'dash' : 'run' : 'idle'
+      if (preview?.type === 'hero') {
+        pose = preview.pose as HandPose
+        const elapsed = (wall - preview.start) % 0.85
+        if (pose === 'punch' || pose === 'hook' || pose === 'counter' || pose === 'finish') {
+          strike = { hand, kind: pose, at: now, aim: 0, hit: true }
+          age = hand === 'right' ? elapsed : 1
+        }
+      }
+      const duration = strike?.kind === 'finish' ? 0.42 : strike?.kind === 'hook' ? 0.27 : 0.23
+      const time = Math.min(1, Math.max(0, age / duration))
+      const extension = strike ? Math.sin(time ** 0.61 * Math.PI) : 0
+      const swing = strike?.kind === 'hook' ? 128 : strike?.kind === 'finish' ? 120 : 92
+      if (strike && time < 1) pose = strike.kind
+      if (demoHurt > 0.2) pose = 'hurt'
+      if (fall > 0) pose = 'knockout'
+      const bob = Math.sin((preview?.type === 'hero' ? wall : now) * (pose === 'dash' ? 15 : 9) + side * 1.2) *
+        (pose === 'dash' ? 10 : pose === 'run' || run.active ? 6 : 2)
+      const aim = strike ? Math.max(-45, Math.min(45, strike.aim * 25)) : 0
+      const x = width / 2 + side * (102 + fall * 24) + (aim - side * swing) * extension
+      const y = height - 103 + bob - extension * height * 0.31 + fall * 122 + demoHurt * 17
+      const scale = 1 - extension * 0.33 + (strike?.kind === 'counter' ? extension * 0.12 : 0)
+      const id = hand === 'left' ? 'fist.left' : 'fist.right'
+      this.assets.pose(image, id, pose, strike ? age : now)
+      this.assets.place(image, id, x, y, scale)
+      image.setRotation(side * (0.11 + fall * 0.6 + demoHurt * 0.24) +
+        extension * side * (strike?.kind === 'hook' ? 0.62 : strike?.kind === 'counter' ? -0.24 : -0.10))
+    }
+  }
+
+  private warning(x: number, y: number, counter: boolean, ideal: boolean) {
+    const color = counter ? ideal ? 0xfff0a5 : 0xffcf4c : 0xff594b
+    this.marks.fillStyle(0x272423).fillCircle(x, y, counter ? 12 : 10)
+    this.marks.lineStyle(counter && ideal ? 3 : 2, color).strokeCircle(x, y, counter ? 12 : 10)
+    this.marks.fillStyle(color).fillRect(x - 2, y - 6, 4, 8).fillCircle(x, y + 5, 2)
+  }
+
+  private drawParticles(projector: PerspectiveProjector, now: number) {
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const effect = this.particles[i]
+      const life = effect.kind === 'finish' || effect.kind === 'rage' ? 0.60 : effect.kind === 'level' ? 0.48 : 0.33
+      const progress = (now - effect.at) / life
+      if (progress >= 1) { this.particles.splice(i, 1); continue }
+      const point = projector.project(effect.x, effect.z)
+      const alpha = (1 - progress) * 0.9
+      const color = colors[effect.kind]
+      if (effect.kind === 'level') {
+        this.effects.lineStyle(3, color, alpha * 0.48).strokeRect(5, 5, projector.width - 10, projector.height - 10)
+        continue
+      }
+      if (point.distance < -2) continue
+      const y = point.y - Math.min(100, 80 * point.scale)
+      if (effect.kind === 'electric' && effect.fromX !== undefined && effect.fromZ !== undefined) {
+        const from = projector.project(effect.fromX, effect.fromZ)
+        let px = from.x
+        let py = from.y - Math.min(100, 80 * from.scale)
+        this.effects.lineStyle(2.8, color, alpha)
+        for (let segment = 1; segment <= 5; segment++) {
+          const t = segment / 5
+          const nx = from.x + (point.x - from.x) * t
+          const ny = from.y - Math.min(100, 80 * from.scale) +
+            (y - (from.y - Math.min(100, 80 * from.scale))) * t + (segment === 5 ? 0 : (segment % 2 ? 8 : -8))
+          this.effects.lineBetween(px, py, nx, ny)
+          px = nx
+          py = ny
+        }
+        continue
+      }
+      const radius = (effect.kind === 'finish' ? 95 : effect.kind === 'wave' || effect.kind === 'hook' ? 44 :
+        effect.kind === 'miss' ? 15 : 27) * (0.4 + progress * 1.1)
+      this.effects.lineStyle(effect.kind === 'miss' ? 1 : 2.5, color, effect.kind === 'miss' ? alpha * 0.32 : alpha)
+        .strokeEllipse(point.x, y, radius * 1.30, effect.kind === 'wave' ? radius * 0.44 : radius)
+      if (effect.kind === 'miss' || effect.kind === 'fire') continue
+      for (let ray = 0; ray < 7; ray++) {
+        const angle = ray * 6.283 / 7 + progress * 0.3
         const dx = Math.cos(angle) * radius
         const dy = Math.sin(angle) * radius
-        this.effects.lineBetween(point.x + dx * 0.68, y + dy * 0.68, point.x + dx, y + dy)
+        this.effects.lineBetween(point.x + dx * 0.61, y + dy * 0.61, point.x + dx, y + dy)
       }
     }
-    while (this.impacts.length && now - this.impacts[0].at >= 0.32) this.impacts.shift()
-    if (this.flash && now - this.flash.at < 0.23) {
-      this.effects.lineStyle(15, this.flash.color, 0.65 * (1 - (now - this.flash.at) / 0.23))
-        .strokeRect(4, 4, width - 8, height - 8)
+  }
+
+  private drawZones(run: ParkRun, projector: PerspectiveProjector) {
+    const base = run.runner.z + 0.08
+    const front = run.runner.z + run.balance.reach
+    for (const x of [-route.halfWidth, -route.laneWidth / 2, route.laneWidth / 2, route.halfWidth]) {
+      const near = projector.project(x, base)
+      const far = projector.project(x, run.runner.z + 20)
+      this.marks.lineStyle(1, 0x8af8ea, 0.65).lineBetween(near.x, near.y, far.x, far.y)
     }
-    this.drawFists(run, width, height, visualTime)
-  }
-
-  private drawFists(run: SandboxRun, width: number, height: number, visualTime: number) {
-    const { combat, now } = run
-    const frameDelta = Math.max(0, visualTime - this.lastFistFrame)
-    this.lastFistFrame = visualTime
-    for (const hand of ['left', 'right'] as const) {
-      const image = this.fists[hand]
-      const id: AssetId = hand === 'left' ? 'fist.left' : 'fist.right'
-      const side = hand === 'left' ? -1 : 1
-      const broken = now < combat.brokenUntil || run.phase === 'defeat'
-      const strike = combat.strike?.hand === hand ? combat.strike : undefined
-      const elapsed = strike ? now - strike.since : 0
-      const progress = Math.min(1, elapsed / 0.23)
-      const extension = strike ? Math.sin(progress ** 0.66 * Math.PI) : 0
-      const guard = combat.blocking && !broken
-      const pose: HandPose = broken ? 'broken' : guard ? 'block' : strike ? (strike.hook ? 'hook' : 'punch') : 'idle'
-      const state = this.handState[hand]
-      if (state.pose !== pose) {
-        state.pose = pose
-        state.since = visualTime
-      }
-      state.guard = Math.max(0, Math.min(1, state.guard + (guard ? 1 : -1) * frameDelta * 10))
-      const lift = broken ? 0 : state.guard
-      const bob = Math.sin(visualTime * (run.moving ? 10 : 4) + side) * (run.moving ? 7 : 2)
-      const aim = strike ? strike.targetX * 24 : 0
-      const x = width / 2 + side * (104 - 42 * lift) + (aim - side * (strike?.hook ? 136 : 89)) * extension
-      const y = height - 111 - 97 * lift + bob - extension * height * 0.29 + (broken ? 91 : 0)
-      const scale = 1 + 0.08 * lift - extension * 0.42
-      this.assets.pose(image, id, pose, pose === 'punch' || pose === 'hook' ? elapsed : visualTime - state.since)
-      this.assets.place(image, id, x, y, scale)
-      image.setRotation(side * (0.09 + 0.07 * lift) + extension * side * (strike?.hook ? 0.50 : -0.07))
+    const near = projector.project(run.runner.x, base)
+    const far = projector.project(run.runner.x, front)
+    this.marks.lineStyle(2, 0x9af9df, 0.9).strokeEllipse(far.x, far.y, 80 * far.scale, 16 * far.scale)
+      .strokeEllipse(near.x, near.y - 12, 80 * near.scale, 13 * near.scale)
+    for (const enemy of run.combat.enemies) {
+      const point = projector.project(enemy.x, enemy.z)
+      if (point.visible && enemy.hp > 0) this.marks.strokeEllipse(point.x, point.y, 60 * point.scale, 12 * point.scale)
     }
-  }
-
-  private warning(x: number, y: number, counter: boolean) {
-    const color = counter ? 0xffdf5a : 0xf25446
-    this.marks.fillStyle(0x272926).fillCircle(x, y, 13)
-    this.marks.lineStyle(2, color).strokeCircle(x, y, 12)
-    this.marks.fillStyle(color).fillRoundedRect(x - 2, y - 7, 4, 9, 2).fillCircle(x, y + 6, 2)
-  }
-
-  private drawSector(run: SandboxRun, projector: PerspectiveProjector) {
-    const near = 0.75
-    const { reach, sector } = run.combat.balance
-    const left = projector.project(-reach * sector, run.z + reach)
-    const right = projector.project(reach * sector, run.z + reach)
-    const base = projector.project(0, run.z + near)
-    this.marks.lineStyle(2, 0x67f8e8, 0.8).beginPath()
-      .moveTo(base.x, base.y).lineTo(left.x, left.y).lineTo(right.x, right.y)
-      .closePath().strokePath()
   }
 }

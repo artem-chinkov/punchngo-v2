@@ -1,9 +1,11 @@
 {
-  "name": "punchngo-combat-sandbox",
-  "version": "0.1.0",
+  "name": "punchngo-v2",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": "^20.19.0 || >=22.12.0" },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "test": "node --test",

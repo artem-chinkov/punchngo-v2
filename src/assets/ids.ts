@@ -1,13 +1,19 @@
-export const enemyTypes = ['thug', 'quick', 'brute'] as const
+export const regularTypes = ['thug', 'quick', 'brute'] as const
+export const enemyTypes = [...regularTypes, 'bulldog'] as const
+export type RegularType = typeof regularTypes[number]
 export type EnemyType = typeof enemyTypes[number]
 export type Hand = 'left' | 'right'
 
-export type EnemyPose =
-  | 'approach' | 'positioning' | 'idle' | 'telegraph' | 'attack'
-  | 'recovery' | 'hit' | 'stunned' | 'retreat' | 'withdraw' | 'defeated'
+export const enemyPoses = [
+  'idle', 'approach', 'positioning', 'laneTell', 'telegraph', 'attack', 'recovery',
+  'hit', 'knockback', 'sideFlight', 'stunned', 'airborne', 'fall', 'defeated',
+  'retreat', 'rage', 'finish',
+] as const
+export type EnemyPose = typeof enemyPoses[number]
 
-export type HandPose = 'idle' | 'punch' | 'hook' | 'block' | 'broken'
+export const handPoses = ['idle', 'run', 'punch', 'hook', 'counter', 'dash', 'hurt', 'knockout', 'finish'] as const
+export type HandPose = typeof handPoses[number]
 export type AnimationState = EnemyPose | HandPose
 export type AssetId =
   | EnemyType | 'fist.left' | 'fist.right'
-  | 'park.tree' | 'park.bench' | 'park.sky' | 'park.ridge.far' | 'park.ridge.near'
+  | 'park.tree' | 'park.bench' | 'park.lamp' | 'park.sky' | 'park.ridge.far' | 'park.ridge.near'

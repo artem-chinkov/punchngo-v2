@@ -1,28 +1,48 @@
 import type { EnemyPose, EnemyType } from '../assets/ids'
-import { route } from '../world/route'
+import type { Runner } from '../game/Runner'
+import { laneX, type Lane } from '../world/route'
 import type { Balance } from './balance'
 
+export interface Chain {
+  visited: Set<number>
+}
+
 export interface Enemy {
+  id: number
   type: EnemyType
+  lane: Lane
+  destination: Lane
   x: number
   z: number
-  lane: number
+  previousX: number
+  previousZ: number
+  y: number
+  vy: number
+  vx: number
+  vz: number
   hp: number
   maxHp: number
   pose: EnemyPose
   since: number
   until: number
-  nextAttack: number
-  nextWithdrawal?: number
-  withdrawalOrigin: number
-  lastHit: number
-  bonus: boolean
+  nextLane: number
+  contactUntil: number
+  flightUntil: number
+  chain?: Chain
+  depth: number
+  removeAt: number
+  burnTicks: number
+  burnAt: number
+  burnDamage: number
+  bossPhase: 1 | 2
 }
 
-export function createEnemy(type: EnemyType, lane: number, z: number, balance: Balance): Enemy {
-  const hp = balance.enemies[type].hp
-  return { type, x: lane * 2.12, z, lane, hp, maxHp: hp, pose: 'approach',
-    since: 0, until: 0, nextAttack: 0, withdrawalOrigin: z, lastHit: -Infinity, bonus: false }
+export function createEnemy(id: number, type: EnemyType, lane: Lane, z: number, hp: number, now: number): Enemy {
+  const x = laneX(lane)
+  return { id, type, lane, destination: lane, x, z, previousX: x, previousZ: z, y: 0, vy: 0, vx: 0, vz: 0,
+    hp, maxHp: hp, pose: 'approach', since: now, until: now, nextLane: now + 0.55 + (id % 3) * 0.24,
+    contactUntil: 0, flightUntil: 0, depth: 0, removeAt: Infinity,
+    burnTicks: 0, burnAt: Infinity, burnDamage: 0, bossPhase: 1 }
 }
 
 export function setPose(enemy: Enemy, pose: EnemyPose, now: number, duration = 0) {
@@ -32,112 +52,154 @@ export function setPose(enemy: Enemy, pose: EnemyPose, now: number, duration = 0
 }
 
 export function inCounterWindow(enemy: Enemy, now: number, balance: Balance) {
-  return enemy.pose === 'telegraph' && now >= enemy.until - balance.counterWindow && now < enemy.until
+  return enemy.hp > 0 && enemy.pose === 'telegraph' && now >= enemy.until - balance.counterWindow && now < enemy.until
 }
 
-function stepToward(from: number, to: number, amount: number) {
-  return from + Math.sign(to - from) * Math.min(Math.abs(to - from), amount)
+function toward(from: number, to: number, distance: number) {
+  return from + Math.sign(to - from) * Math.min(Math.abs(to - from), distance)
 }
 
 export class EnemyAI {
   private nextAttack = 0
-  private lastAttacker?: Enemy
 
   constructor(private readonly balance: Balance) {}
 
-  interrupt(enemy: Enemy, now: number) {
-    if (enemy.pose === 'telegraph' || enemy.pose === 'attack') {
-      enemy.nextAttack = now + this.balance.enemies[enemy.type].cooldown
-      this.nextAttack = Math.max(this.nextAttack, now + this.balance.attackGap)
-    }
-  }
-
-  update(enemies: Enemy[], now: number, dt: number, cameraZ: number, fight: boolean, onAttack: (enemy: Enemy) => void) {
-    const alive = enemies.filter(enemy => enemy.hp > 0)
-    if (alive.length && alive.every(enemy => enemy.lane !== 0)) {
-      const nearestCenter = alive.reduce((a, b) => Math.abs(a.x) <= Math.abs(b.x) ? a : b)
-      nearestCenter.lane = 0
-    }
-
-    for (const enemy of alive) {
-      const stats = this.balance.enemies[enemy.type]
-      const stance = route.stopZ + 2.13 + Math.abs(enemy.lane) * 0.36
-      const pace = enemy.type === 'quick' ? Math.sin(now * 6) * 0.23 : Math.sin(now * 2 + enemy.lane) * 0.09
-      if (enemy.pose === 'telegraph') {
-        enemy.z = stepToward(enemy.z, cameraZ + 1.88, stats.approach * dt * 0.65)
-        if (now >= enemy.until) {
-          setPose(enemy, 'attack', now, 0.18)
-          enemy.nextAttack = now + stats.cooldown
-          this.nextAttack = now + this.balance.attackGap
-          onAttack(enemy)
-        }
-        continue
-      }
-      if (enemy.pose === 'attack') {
-        if (now >= enemy.until) setPose(enemy, 'recovery', now, 0.35)
-        continue
-      }
-      if (enemy.pose === 'retreat') {
-        enemy.z = stepToward(enemy.z, stance + 1.10, 7 * dt)
-        if (now >= enemy.until) setPose(enemy, 'positioning', now)
-        continue
-      }
-      if (enemy.pose === 'withdraw') {
-        if (now >= enemy.until) {
-          enemy.z = enemy.withdrawalOrigin
-          setPose(enemy, 'positioning', now)
-        } else {
-          const travel = stats.retreatDistance / stats.approach
-          const progress = Math.min(1, (now - enemy.since) / travel, (enemy.until - now) / travel)
-          enemy.z = enemy.withdrawalOrigin + stats.retreatDistance * progress ** 2 * (3 - 2 * progress)
-        }
-        continue
-      }
-      if (enemy.pose === 'recovery' || enemy.pose === 'hit' || enemy.pose === 'stunned') {
-        if (now < enemy.until) continue
-        setPose(enemy, 'positioning', now)
-      }
-
-      enemy.x = stepToward(enemy.x, enemy.lane * 1.47 + pace, stats.strafe * dt)
-      enemy.z = stepToward(enemy.z, stance, stats.approach * dt)
-      const pose = Math.abs(enemy.z - stance) > 0.24 ? 'approach'
-        : Math.abs(enemy.x - enemy.lane * 1.47) > 0.3 ? 'positioning' : 'idle'
-      if (enemy.pose !== pose) setPose(enemy, pose, now)
-    }
-
-    if (!fight) return
-    this.startWithdrawal(alive, now)
-
-    if (now < this.nextAttack ||
-      alive.some(enemy => enemy.pose === 'telegraph' || enemy.pose === 'attack')) return
-
-    const ready = alive.filter(enemy => enemy.pose === 'idle' && enemy.nextAttack <= now &&
-      enemy.z - cameraZ <= 2.8)
-    const attacker = ready.find(enemy => enemy !== this.lastAttacker) ?? ready[0]
-    if (attacker) {
-      this.lastAttacker = attacker
-      setPose(attacker, 'telegraph', now, this.balance.enemies[attacker.type].windup)
-    }
-  }
-
-  private startWithdrawal(enemies: Enemy[], now: number) {
+  update(enemies: Enemy[], runner: Runner, now: number, dt: number,
+    strike: (enemy: Enemy) => void, contact: (enemy: Enemy) => void) {
+    let bossThreat = false
+    let active = false
     let candidate: Enemy | undefined
-    let earliest = Infinity
     for (const enemy of enemies) {
-      const stats = this.balance.enemies[enemy.type]
-      if (enemy.pose !== 'idle' || stats.retreatInterval <= 0 || stats.retreatDistance <= 0) continue
-      enemy.nextWithdrawal ??= now + stats.retreatInterval
-      if (enemy.nextWithdrawal <= now && enemy.nextWithdrawal < earliest) {
-        candidate = enemy
-        earliest = enemy.nextWithdrawal
+      enemy.previousX = enemy.x
+      enemy.previousZ = enemy.z
+      if (this.advanceFlight(enemy, runner, now, dt) || enemy.hp <= 0) continue
+      if (enemy.type === 'bulldog') {
+        this.boss(enemy, runner, now, dt, strike)
+        bossThreat = enemy.pose === 'telegraph' || enemy.pose === 'attack' || enemy.z - runner.z < 4.4
+        continue
       }
+      this.regular(enemy, runner, now, dt, strike)
+      const distance = enemy.z - runner.z
+      const offset = Math.abs(enemy.x - runner.x)
+      if (distance <= 0.55 && enemy.previousZ - runner.previousZ > -0.52 && offset < 0.66 && now >= enemy.contactUntil) {
+        contact(enemy)
+        continue
+      }
+      if (enemy.pose === 'telegraph' || enemy.pose === 'attack') active = true
+      if (distance >= 0.75 && distance <= 5.65 && offset < 0.75 &&
+        (enemy.pose === 'approach' || enemy.pose === 'idle') && (!candidate || enemy.z < candidate.z)) candidate = enemy
     }
-    if (!candidate || enemies.some(enemy => enemy.pose === 'withdraw')) return
+    if (candidate && !active && !bossThreat && now >= this.nextAttack) {
+      const windup = this.balance.enemies[candidate.type].windup
+      this.nextAttack = now + windup + this.balance.attackGap
+      setPose(candidate, 'telegraph', now, windup)
+    }
+  }
 
-    const stats = this.balance.enemies[candidate.type]
-    const duration = 2 * stats.retreatDistance / stats.approach + stats.retreatHold
-    candidate.withdrawalOrigin = candidate.z
-    candidate.nextWithdrawal = now + stats.retreatInterval
-    setPose(candidate, 'withdraw', now, duration)
+  private advanceFlight(enemy: Enemy, runner: Runner, now: number, dt: number) {
+    if (now >= enemy.flightUntil && enemy.y <= 0) {
+      enemy.chain = undefined
+      if (enemy.pose === 'airborne' || enemy.pose === 'sideFlight' || enemy.pose === 'knockback' || enemy.pose === 'hit') {
+        setPose(enemy, enemy.hp > 0 ? 'recovery' : 'fall', now, 0.22)
+      }
+      if (enemy.pose === 'fall' && now >= enemy.until) setPose(enemy, 'defeated', now)
+      return false
+    }
+
+    const wasAirborne = enemy.y > 0
+    const bossMotion = enemy.type === 'bulldog' && enemy.hp > 0 ? runner.z - runner.previousZ : 0
+    enemy.z += enemy.vz * dt + bossMotion
+    const edge = 2.55
+    enemy.x = Math.max(-edge, Math.min(edge, enemy.x + enemy.vx * dt))
+    const drag = Math.exp(-1.45 * dt)
+    enemy.vx *= drag
+    enemy.vz *= drag
+    enemy.y = Math.max(0, enemy.y + enemy.vy * dt)
+    enemy.vy = enemy.y > 0 ? enemy.vy - 21 * dt : 0
+    if (wasAirborne && enemy.y === 0 && enemy.pose === 'airborne') {
+      setPose(enemy, enemy.hp > 0 ? 'knockback' : 'fall', now, 0.20)
+    }
+    return true
+  }
+
+  private regular(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy) => void) {
+    const stats = this.balance.enemies[enemy.type]
+    if (enemy.pose === 'telegraph') {
+      enemy.z -= stats.speed * dt * 0.35
+      if (now >= enemy.until) {
+        setPose(enemy, 'attack', now, 0.16)
+        if (enemy.z - runner.z <= 2.65 && enemy.z - runner.z > -0.4 && Math.abs(enemy.x - runner.x) < 0.84) strike(enemy)
+      }
+      return
+    }
+    if (enemy.pose === 'attack') {
+      if (now >= enemy.until) setPose(enemy, 'recovery', now, stats.recovery)
+      return
+    }
+    if (enemy.pose === 'stunned' || enemy.pose === 'recovery') {
+      if (now < enemy.until) return
+      setPose(enemy, 'approach', now)
+    }
+
+    enemy.z -= stats.speed * dt
+    if (enemy.pose === 'laneTell') {
+      if (now >= enemy.until) setPose(enemy, 'positioning', now)
+      return
+    }
+    const targetX = laneX(enemy.destination)
+    const lateral = enemy.type === 'quick' ? 5.25 : 1.9
+    enemy.x = toward(enemy.x, targetX, lateral * dt)
+    if (enemy.x === targetX) {
+      enemy.lane = enemy.destination
+      if (enemy.pose === 'positioning') setPose(enemy, 'approach', now)
+    }
+    const distance = enemy.z - runner.z
+    if (enemy.type === 'quick' && enemy.pose === 'approach' && now >= enemy.nextLane && distance > 6.3 && distance < 15.5) {
+      const direction = enemy.lane === 0 ? (enemy.id % 2 ? -1 : 1) : -enemy.lane
+      enemy.destination = (enemy.lane + direction) as Lane
+      enemy.nextLane = now + 3.1
+      setPose(enemy, 'laneTell', now, 0.30)
+    }
+  }
+
+  private boss(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy) => void) {
+    const stats = this.balance.enemies.bulldog
+    const move = runner.z - runner.previousZ
+    const follow = () => { enemy.z = Math.max(runner.z + 1.12, enemy.z) }
+
+    if (enemy.pose === 'stunned' || enemy.pose === 'rage' || enemy.pose === 'recovery') {
+      follow()
+      if (now < enemy.until) return
+      setPose(enemy, 'approach', now)
+    }
+    if (enemy.pose === 'attack') {
+      enemy.x = toward(enemy.x, runner.x, 12 * dt)
+      follow()
+      if (now >= enemy.until) setPose(enemy, 'retreat', now, 0.55)
+      return
+    }
+    if (enemy.pose === 'retreat') {
+      const progress = Math.min(1, (now - enemy.since) / 0.55)
+      enemy.z += move + (1 - progress) * 16 * dt
+      enemy.x = toward(enemy.x, 0, 4 * dt)
+      if (now >= enemy.until) setPose(enemy, 'recovery', now, stats.recovery)
+      return
+    }
+    if (enemy.pose === 'telegraph') {
+      enemy.z -= stats.speed * 0.50 * dt
+      enemy.x = toward(enemy.x, runner.x, (now > enemy.until - 0.12 ? 8 : 1.1) * dt)
+      follow()
+      if (now >= enemy.until) {
+        setPose(enemy, 'attack', now, 0.17)
+        if (enemy.z - runner.z <= 3.55) strike(enemy)
+      }
+      return
+    }
+    enemy.z -= stats.speed * (enemy.bossPhase === 2 ? 1.40 : 1) * dt
+    enemy.x = toward(enemy.x, runner.x * 0.56, 2.6 * dt)
+    follow()
+    if (enemy.z - runner.z <= 5.35) {
+      setPose(enemy, 'telegraph', now, stats.windup * (enemy.bossPhase === 2 ? 0.76 : 1))
+    }
   }
 }

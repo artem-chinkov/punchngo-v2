@@ -1,7 +1,7 @@
 import type Phaser from 'phaser'
-import { drawPlaceholder } from './placeholders'
+import { cycles, drawPlaceholder, type Cycle } from './placeholders'
 import { rasterPack } from './rasterPack'
-import type { AnimationState, AssetId } from './ids'
+import { enemyTypes, type AnimationState, type AssetId } from './ids'
 
 interface AssetLayout {
   width: number
@@ -19,10 +19,12 @@ export type AssetPack = Partial<Record<AssetId, RasterAsset>>
 const layout: Record<AssetId, AssetLayout> = {
   thug: { width: 104, height: 165, origin: [0.5, 0.985], scale: 1 },
   quick: { width: 92, height: 148, origin: [0.5, 0.985], scale: 1 },
+  bulldog: { width: 150, height: 186, origin: [0.5, 0.985], scale: 1 },
   brute: { width: 132, height: 179, origin: [0.5, 0.985], scale: 1 },
   'fist.left': { width: 150, height: 204, origin: [0.49, 0.44], scale: 1 },
   'fist.right': { width: 150, height: 204, origin: [0.51, 0.44], scale: 1 },
   'park.tree': { width: 145, height: 216, origin: [0.5, 0.985], scale: 1 },
+  'park.lamp': { width: 56, height: 208, origin: [0.5, 0.985], scale: 1 },
   'park.bench': { width: 114, height: 72, origin: [0.5, 0.985], scale: 1 },
   'park.sky': { width: 420, height: 265, origin: [0.5, 0], scale: 1 },
   'park.ridge.far': { width: 420, height: 72, origin: [0.5, 0], scale: 1 },
@@ -56,6 +58,16 @@ export class AssetRegistry {
       drawPlaceholder(graphics, id, spec.width, spec.height)
       graphics.generateTexture(key, spec.width, spec.height)
     }
+    for (const id of enemyTypes) {
+      const { width, height } = layout[id]
+      for (const motion of cycles) for (let frame = 0; frame < 4; frame++) {
+        const key = 'placeholder:' + id + ':' + motion + ':' + frame
+        if (this.scene.textures.exists(key)) continue
+        graphics.clear()
+        drawPlaceholder(graphics, id, width, height, motion, frame)
+        graphics.generateTexture(key, width, height)
+      }
+    }
     graphics.destroy()
   }
 
@@ -85,6 +97,15 @@ export class AssetRegistry {
       } else {
         key = rasterKey
       }
+    }
+    if (key.startsWith('placeholder:') && enemyTypes.some(type => type === id)) {
+      let cycle: Cycle | undefined
+      if (pose === 'approach' || pose === 'positioning' || pose === 'retreat') cycle = 'stride'
+      else if (pose === 'telegraph' || pose === 'laneTell' || pose === 'rage') cycle = 'guard'
+      else if (pose === 'attack') cycle = 'jab'
+      else if (pose === 'hit' || pose === 'knockback' || pose === 'sideFlight' || pose === 'stunned' ||
+        pose === 'airborne' || pose === 'fall' || pose === 'defeated' || pose === 'finish') cycle = 'flinch'
+      if (cycle) key += ':' + cycle + ':' + (Math.floor(Math.max(0, elapsed) * (cycle === 'jab' ? 24 : 14)) % 4)
     }
     if (image.texture.key !== key || (frame !== undefined && image.frame.name !== frame)) {
       image.setTexture(key, frame)

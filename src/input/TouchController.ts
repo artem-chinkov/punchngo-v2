@@ -1,15 +1,18 @@
 export class TouchController {
   private pointer?: number
+  private x = 0
+  private y = 0
   private since = 0
-  private held = false
+  private wandered = false
+  private swiped = false
 
   constructor(private readonly canvas: HTMLCanvasElement,
     private readonly enabled: () => boolean,
-    private readonly threshold: () => number,
     private readonly attack: () => void,
-    private readonly block: (active: boolean) => void,
+    private readonly lane: (direction: -1 | 1) => void,
   ) {
     canvas.addEventListener('pointerdown', this.down)
+    canvas.addEventListener('pointermove', this.move)
     canvas.addEventListener('pointerup', this.up)
     canvas.addEventListener('pointercancel', this.cancelPointer)
     canvas.addEventListener('lostpointercapture', this.cancelPointer)
@@ -18,23 +21,16 @@ export class TouchController {
     document.addEventListener('visibilitychange', this.cancel)
   }
 
-  update(now = performance.now()) {
-    if (this.pointer === undefined || this.held || (now - this.since) / 1000 < this.threshold()) return
-    this.held = true
-    if (this.enabled()) this.block(true)
-  }
-
   cancel = () => {
     const pointer = this.pointer
     this.pointer = undefined
-    if (this.held) this.block(false)
-    this.held = false
     if (pointer !== undefined && this.canvas.hasPointerCapture(pointer)) this.canvas.releasePointerCapture(pointer)
   }
 
   destroy() {
     this.cancel()
     this.canvas.removeEventListener('pointerdown', this.down)
+    this.canvas.removeEventListener('pointermove', this.move)
     this.canvas.removeEventListener('pointerup', this.up)
     this.canvas.removeEventListener('pointercancel', this.cancelPointer)
     this.canvas.removeEventListener('lostpointercapture', this.cancelPointer)
@@ -47,13 +43,28 @@ export class TouchController {
     if (event.button !== 0 || this.pointer !== undefined || !this.enabled()) return
     event.preventDefault()
     this.pointer = event.pointerId
-    this.since = performance.now()
+    this.x = event.clientX
+    this.y = event.clientY
+    this.since = event.timeStamp
+    this.wandered = this.swiped = false
     this.canvas.setPointerCapture(event.pointerId)
+  }
+
+  private move = (event: PointerEvent) => {
+    if (event.pointerId !== this.pointer || this.swiped) return
+    const dx = event.clientX - this.x
+    const dy = event.clientY - this.y
+    if (Math.hypot(dx, dy) > 13) this.wandered = true
+    if (Math.abs(dx) >= 30 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+      this.swiped = true
+      if (this.enabled()) this.lane(dx < 0 ? -1 : 1)
+    }
   }
 
   private up = (event: PointerEvent) => {
     if (event.pointerId !== this.pointer) return
-    const tap = !this.held && (performance.now() - this.since) / 1000 < this.threshold()
+    this.move(event)
+    const tap = !this.wandered && !this.swiped && event.timeStamp - this.since <= 320
     this.cancel()
     if (tap && this.enabled()) this.attack()
   }

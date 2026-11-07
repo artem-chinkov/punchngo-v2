@@ -1,10 +1,10 @@
 import Phaser from 'phaser'
-import { SandboxScene } from './game/SandboxScene'
+import { ParkScene } from './game/ParkScene'
 import './style.css'
 
 const stage = document.querySelector<HTMLElement>('#stage')!
 const game = new Phaser.Game({
-  type: Phaser.CANVAS,
+  type: new URLSearchParams(location.search).get('renderer') === 'auto' ? Phaser.AUTO : Phaser.CANVAS,
   parent: stage,
   width: 360,
   height: 640,
@@ -12,7 +12,7 @@ const game = new Phaser.Game({
   scale: { mode: Phaser.Scale.NONE },
   fps: { smoothStep: false },
   render: { antialias: true },
-  scene: [SandboxScene],
+  scene: [ParkScene],
 })
 
 const resize = new ResizeObserver(([entry]) => {
