@@ -1,5 +1,5 @@
 import { CombatSystem } from '../combat/CombatSystem'
-import { setPose } from '../combat/EnemyAI'
+import { setPose, type Enemy } from '../combat/EnemyAI'
 import type { Balance } from '../combat/balance'
 import type { WorldSettings } from '../world/route'
 import { EncounterDirector } from './EncounterDirector'
@@ -29,6 +29,7 @@ export class ParkRun {
   level = 1
   offer: UpgradeId[] = []
   finishAge = 0
+  tutorialTarget?: Enemy
   readonly runner: Runner
   readonly combat: CombatSystem
   private readonly director: EncounterDirector
@@ -47,8 +48,19 @@ export class ParkRun {
   get visualTime() { return this.now + this.finishAge * 0.48 }
 
   start() { if (this.phase === 'ready') this.phase = 'park' }
-  tap() { return this.active && this.combat.tap(this.runner, this.now) }
-  swipe(direction: -1 | 1) { if (this.active) this.runner.changeLane(direction) }
+  tap() { return this.active && !this.tutorialTarget && this.combat.tap(this.runner, this.now) }
+  swipe(direction: -1 | 1) {
+    return this.active && !this.tutorialTarget && this.combat.sideStrike(this.runner, this.now, direction)
+  }
+  special(kind: 'hook' | 'uppercut') {
+    return this.active && !this.tutorialTarget && this.combat.special(this.runner, this.now, kind)
+  }
+  confirmTutorialCounter(skip = false) {
+    const target = this.tutorialTarget
+    if (!target || !this.combat.tutorialCounter(this.runner, this.now, target, skip)) return false
+    this.tutorialTarget = undefined
+    return true
+  }
   clearInput() { this.combat.clearInput() }
 
   choose(id: UpgradeId) {
@@ -60,7 +72,8 @@ export class ParkRun {
     return true
   }
 
-  update(dt: number, invulnerable = false, holdingAttack = false) {
+  update(dt: number, invulnerable = false, hold?: { dash: boolean }, teachCounter = false) {
+    if (this.tutorialTarget) return false
     if (this.phase === 'finisher') {
       this.finishAge += dt
       const boss = this.combat.boss!
@@ -70,9 +83,9 @@ export class ParkRun {
       boss.y = Math.max(0, Math.sin(Math.min(1, this.finishAge / 0.98) * Math.PI)) * 1.48
       boss.x *= Math.exp(-slow * 2)
       if (this.finishAge >= 1.05) this.phase = 'victory'
-      return
+      return false
     }
-    if (!this.active) return
+    if (!this.active) return false
     this.now += dt
     this.runner.advance(dt)
     if (this.phase === 'park' && this.now >= this.balance.bossAt) this.beginBoss()
@@ -82,7 +95,22 @@ export class ParkRun {
     } else this.support()
 
     this.combat.update(this.runner, this.now, dt, invulnerable)
-    if (holdingAttack) this.combat.holdAttack(this.runner, this.now)
+    this.settlePhase()
+    if (!this.active) return false
+    if (teachCounter && this.phase === 'park') {
+      const target = this.combat.counterTarget(this.runner, this.now)
+      if (target && target.type !== 'bulldog') {
+        this.tutorialTarget = target
+        this.clearInput()
+        return false
+      }
+    }
+    const attacked = !!hold && this.combat.holdAttack(this.runner, this.now, hold.dash)
+    if (attacked) this.settlePhase()
+    return attacked
+  }
+
+  private settlePhase() {
     if (this.combat.hp <= 0) {
       this.phase = 'defeat'
       this.clearInput()

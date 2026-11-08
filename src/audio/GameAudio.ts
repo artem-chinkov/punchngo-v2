@@ -138,7 +138,7 @@ export class GameAudio {
     this.lastCue.set(group, now)
   }
 
-  update(phase: Phase, bossPhase: 1 | 2 | undefined, seconds: number) {
+  update(phase: Phase, bossPhase: 1 | 2 | undefined, seconds: number, tutorialPaused = false) {
     if (phase !== this.phase) {
       this.phase = phase
       if (phase === 'victory' || phase === 'defeat') {
@@ -151,7 +151,7 @@ export class GameAudio {
       (bossPhase === 2 ? 'music.bulldog.phase2' : 'music.bulldog.phase1') : undefined
     if (this.target !== next) this.boundary = undefined
     this.target = next
-    const duck = phase === 'upgrade' || phase === 'finisher' ? 0.35 : 1
+    const duck = phase === 'upgrade' || phase === 'finisher' || tutorialPaused ? 0.35 : 1
     this.musicDuck += (duck - this.musicDuck) * Math.min(1, seconds * 9)
     if (phase !== 'finisher' && next && this.current?.key !== next) this.transition(next)
     if (this.outgoing && this.current) {

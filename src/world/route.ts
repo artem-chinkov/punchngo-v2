@@ -1,6 +1,7 @@
 export type Lane = -1 | 0 | 1
 export const lanes: readonly Lane[] = [-1, 0, 1]
 export const route = { halfWidth: 2.65, laneWidth: 1.63 }
+export const laneAt = (x: number): Lane => Math.max(-1, Math.min(1, Math.round(x / route.laneWidth))) as Lane
 export const laneX = (lane: Lane) => lane * route.laneWidth
 
 export interface WorldSettings {

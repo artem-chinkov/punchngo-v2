@@ -24,6 +24,20 @@ const combat: Field<Main>[] = [
   ['idealTapGap', 'Пауза для идеального тапа, × интервал удара', 1, 4], ['attackGap', 'Пауза между замахами, с', 0.1, 3],
   ['comboGrace', 'Пауза до спада комбо, с', 0.3, 8], ['comboDecay', 'Шаг спада комбо, с', 0.1, 3],
 ]
+const gestures: Field<Main>[] = [
+  ['minPunchInterval', 'Минимальный интервал ударов, с', 0.06, 0.5],
+  ['holdHurtPause', 'Пауза серии после урона, с', 0, 0.5],
+  ['specialCooldown', 'Интервал хука и апперкота, с', 0.1, 3],
+  ['hookDamage', 'Урон хука, ×', 0.1, 4], ['hookForce', 'Импульс хука, ×', 0.1, 4],
+  ['hookSplashDamage', 'Урон дуги хука, ×', 0.05, 2], ['hookSplashDepth', 'Глубина дуги', 0.1, 6],
+  ['hookWaveDamage', 'Урон волны хука, ×', 0.05, 2], ['hookWaveDepth', 'Глубина волны хука', 0.1, 6],
+  ['electricDamage', 'Урон разряда, ×', 0.05, 2], ['electricRadius', 'Радиус разряда', 0.1, 8],
+  ['uppercutDamage', 'Урон апперкота, ×', 0.1, 4], ['uppercutForce', 'Импульс апперкота, ×', 0.1, 4],
+  ['uppercutLift', 'Скорость подъёма врага', 1, 10],
+  ['landingDamage', 'Урон волны приземления, ×', 0.05, 2], ['landingRadius', 'Радиус волны приземления', 0.1, 6],
+  ['sideDamage', 'Урон бокового удара, ×', 0.1, 3], ['sideForce', 'Импульс вперёд бокового удара, ×', 0.1, 3],
+  ['sideImpulse', 'Боковой импульс врага', 1, 15],
+]
 const director: Field<Main>[] = [
   ['spawnRate', 'Частота появления, ×', 0.25, 3], ['density', 'Плотность, ×', 0.5, 1.5],
   ['bossAt', 'Появление Бульдога, с', 10, 600],
@@ -63,12 +77,12 @@ export class BalancePanel {
 
   get paused() { return this.open || this.cameraOpen || !!this.preview }
 
-  constructor(root: HTMLElement, private readonly changed: () => void, restart: (atBoss: boolean) => void) {
+  constructor(root: HTMLElement, private readonly changed: () => void, restart: (atBoss: boolean) => void, resetTutorial: () => void) {
     this.shell.innerHTML = `
       <button class="dev-toggle" type="button" aria-expanded="false">DEV</button>
       <section class="dev-panel" aria-label="Панель разработчика" hidden>
         <header><strong>БАЛАНС / PARK V2</strong><button type="button" data-action="close">Закрыть</button></header>
-        <div class="dev-actions"><button type="button" data-action="camera">Камера</button></div>
+        <div class="dev-actions"><button type="button" data-action="camera">Камера</button><button type="button" data-action="tutorial">Сбросить обучение</button></div>
         <form>
           <div class="dev-actions">
             <button type="submit">Применить и начать</button>
@@ -184,6 +198,10 @@ export class BalancePanel {
         this.changed()
         cameraHeight.focus()
       }
+      if (action === 'tutorial') {
+        this.toggle(false)
+        resetTutorial()
+      }
       if (action === 'reset') {
         this.balance = structuredClone(defaultBalance)
         this.renderFields()
@@ -203,6 +221,8 @@ export class BalancePanel {
       }
     }
   }
+
+  setTutorialHidden(hidden: boolean) { this.shell.hidden = hidden }
 
   draw(run: ParkRun, fps: number, wall: number) {
     if (this.current !== run) this.current = run
@@ -240,6 +260,7 @@ export class BalancePanel {
     this.options.length = 0
     this.section('Герой и движение', this.balance, movement)
     this.section('Удары, цепочки и контратаки', this.balance, combat)
+    this.section('Спецприёмы и удержание', this.balance, gestures)
     this.section('Спавн, время и ранги', this.balance, director)
     for (const type of enemyTypes) this.section(names[type], this.balance.enemies[type], enemy)
   }

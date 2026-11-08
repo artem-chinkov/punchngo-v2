@@ -27,7 +27,8 @@ export class HUD {
   private readonly bossPanel: HTMLElement
   private readonly portrait: HTMLElement
   private readonly lane: HTMLElement
-  private readonly pips: HTMLElement
+  private readonly special: HTMLElement
+  private readonly muteButton: HTMLButtonElement
   private readonly signal: HTMLElement
   private readonly feedback: HTMLElement
   private readonly combo: HTMLElement
@@ -40,7 +41,7 @@ export class HUD {
   private wall = 0
 
   constructor(root: HTMLElement, begin: () => void, choose: (id: UpgradeId) => void,
-    audio: AudioSettings, changeAudio: (settings: AudioSettings) => void) {
+    audio: AudioSettings, changeAudio: (settings: AudioSettings) => void, teach: () => void) {
     this.audio = audio
     this.root = document.createElement('div')
     this.root.className = 'hud'
@@ -65,7 +66,7 @@ export class HUD {
           <div class="signal" data-signal></div>
           <div class="hud-strip"><span data-value="level"></span>
             <div class="lane-marker" data-lane aria-label="Полоса"><i></i><i></i><i></i></div>
-            <div class="pips" data-pips aria-label="Короткая серия"><i></i><i></i><i></i></div>
+            <div class="special-meter" data-special aria-label="Готовность хука и апперкота"><span aria-hidden="true">↑ ↓</span><i></i></div>
           </div>
           <progress data-xp max="1" aria-label="Опыт"></progress>
           <button class="hud-mute" data-mute type="button" aria-label="Отключить звук" aria-pressed="false"></button>
@@ -83,7 +84,8 @@ export class HUD {
     this.bossPanel = this.root.querySelector('.boss-hud')!
     this.portrait = this.root.querySelector('.face')!
     this.lane = this.root.querySelector('[data-lane]')!
-    this.pips = this.root.querySelector('[data-pips]')!
+    this.special = this.root.querySelector('[data-special]')!
+    this.muteButton = this.root.querySelector('.hud-mute')!
     this.signal = this.root.querySelector('[data-signal]')!
     this.feedback = this.root.querySelector('[data-feedback]')!
     this.combo = this.root.querySelector('[data-combo]')!
@@ -118,6 +120,7 @@ export class HUD {
       if (!(event.target instanceof HTMLElement)) return
       const button = event.target.closest('button')
       if (button?.hasAttribute('data-start')) begin()
+      else if (button?.hasAttribute('data-replay-tutorial')) teach()
       else {
         const card = upgradeAt(event.target)
         const keyboard = event.detail === 0 && (!(event instanceof PointerEvent) || !event.pointerType)
@@ -146,7 +149,7 @@ export class HUD {
     this.feedbackUntil = now + 0.64
   }
 
-  draw(run: ParkRun, records: Records, wall: number, preview = false) {
+  draw(run: ParkRun, records: Records, wall: number, preview = false, teaching = false, showTutorialHUD = false) {
     this.wall = wall
     const { combat, phase, now, level } = run
     const boss = combat.boss
@@ -170,11 +173,16 @@ export class HUD {
     }
     const lane = String(run.runner.lane + 1)
     if (this.lane.dataset.selected !== lane) this.lane.dataset.selected = lane
-    const pips = String(combat.short)
-    if (this.pips.dataset.lit !== pips) this.pips.dataset.lit = pips
+    const special = combat.specialRemaining(now)
+    const ready = special <= 1e-9
+    this.special.classList.toggle('recharging', !ready)
+    const fill = String(ready ? 1 : 1 - special / run.balance.specialCooldown)
+    if (this.special.style.getPropertyValue('--special') !== fill) this.special.style.setProperty('--special', fill)
+    this.display.hidden = phase === 'ready' && !showTutorialHUD
+    this.muteButton.disabled = teaching
     const counter = combat.counterTarget(run.runner, now)
     set(this.signal, counter ? 'ЖЁЛТЫЙ · ТАП ДЛЯ КОНТРАТАКИ' :
-      boss ? 'БУЛЬДОГ · СЛЕДИ ЗА ЗАМАХОМ' : now < 19 ? 'ТАП / УДЕРЖАНИЕ — УДАР · СВАЙП — ПОЛОСА' : '')
+      boss ? 'БУЛЬДОГ · СЛЕДИ ЗА ЗАМАХОМ' : now < 19 ? 'ТАП / УДЕРЖАНИЕ — УДАРЫ · СВАЙПЫ — СПЕЦПРИЁМЫ' : '')
     this.signal.classList.toggle('counter-ready', !!counter)
     set(this.combo, combat.combo > 1 ? combat.combo + ' COMBO ×' + counts.format(combat.multiplier) : '')
     if (combat.multiplier !== this.previousMultiplier) {
@@ -184,11 +192,10 @@ export class HUD {
       this.previousMultiplier = combat.multiplier
     }
     if (run.visualTime >= this.feedbackUntil) set(this.feedback, '')
-    this.screen.hidden = preview || (phase !== 'ready' && phase !== 'upgrade' && !run.finished)
+    this.screen.hidden = preview || teaching || (phase !== 'ready' && phase !== 'upgrade' && !run.finished)
     if (phase !== this.phase || run.offer !== this.previousOffer) {
       this.phase = phase
       this.previousOffer = run.offer
-      this.display.hidden = phase === 'ready'
       this.cancelInput()
       if (phase === 'ready') this.menu(records)
       else if (phase === 'upgrade') {
@@ -241,16 +248,9 @@ export class HUD {
         <p class="round-kicker"><span></span> ARCADE / PARK RUN <b>V2.0</b></p>
         <h1>PUNCH <em>’N’</em><br>GO<span>.</span></h1>
         <p class="menu-copy">Пробеги парк. Разбей группы врагов. Встреть Бульдога.</p>
-        <ul class="round-guide">
-          <li><span aria-hidden="true">👣</span><p><strong>Бег.</strong> Герой сам бежит по парку.</p></li>
-          <li><span aria-hidden="true">🥊</span><p><strong>Удар и рывок.</strong> Тапни для одного удара или удерживай палец для серии.</p></li>
-          <li><span aria-hidden="true">↔️</span><p><strong>Свайп.</strong> Смени полосу. Удержание при этом прервётся.</p></li>
-          <li><span aria-hidden="true">❗</span><p><strong>Красный сигнал.</strong> Враг замахнулся. Автоудары ждут, отпусти палец.</p></li>
-          <li><span aria-hidden="true">🟡</span><p><strong>Контратака.</strong> Тапни на жёлтом, чтобы перебить атаку.</p></li>
-          <li><span aria-hidden="true">💥</span><p><strong>Комбо.</strong> Третье попадание подряд даёт широкий хук.</p></li>
-        </ul>
         ${records.best ? '<p class="record">РЕКОРД <strong>' + counts.format(records.best.score) + '</strong></p>' : ''}
         ${this.audioControls()}
+        <button type="button" class="menu-tutorial" data-replay-tutorial>ОБУЧЕНИЕ</button>
         <button type="button" data-start>Начать забег <span aria-hidden="true">➜</span></button>
       </section>`
     this.syncAudioControls()
@@ -295,6 +295,7 @@ export class HUD {
         </dl>
         ${records.best ? '<p class="record">РЕКОРД <strong>' + counts.format(records.best.score) + '</strong></p>' : ''}
         ${this.audioControls()}
+        <button type="button" class="menu-tutorial" data-replay-tutorial>ОБУЧЕНИЕ</button>
         <button type="button" data-start>Новый забег <span aria-hidden="true">➜</span></button>
       </section>`
     const cause = this.screen.querySelector('.result-cause')

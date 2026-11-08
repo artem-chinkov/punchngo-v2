@@ -16,11 +16,13 @@ export class Runner {
   constructor(private readonly balance: Balance) { this.speed = balance.speed }
 
   changeLane(direction: -1 | 1) {
+    if (this.laneAge < this.balance.laneDuration) return false
     const next = Math.min(1, Math.max(-1, this.lane + direction)) as Lane
-    if (next === this.lane) return
+    if (next === this.lane) return false
     this.laneFrom = this.x
     this.lane = next
     this.laneAge = 0
+    return true
   }
 
   launchDash(bonus: number) {

@@ -2,12 +2,12 @@ import type { EnemyType, Hand } from '../assets/ids'
 import type { SfxCue } from '../audio/cues'
 import type { Runner } from '../game/Runner'
 import { Build, type UpgradeId } from '../game/upgrades'
-import { route, type Lane } from '../world/route'
+import { laneAt, laneX, route, lanes, type Lane } from '../world/route'
 import { createEnemy, EnemyAI, inCounterWindow, setPose, type Chain, type Enemy } from './EnemyAI'
 import type { Balance } from './balance'
 
 export type Effect = 'hit' | 'hook' | 'counter' | 'ideal' | 'chain' | 'air' | 'wave' | 'electric' |
-  'fire' | 'hurt' | 'miss' | 'rage' | 'finish' | 'level'
+  'fire' | 'hurt' | 'miss' | 'rage' | 'finish' | 'level' | 'side' | 'landing'
 export interface CombatEvent {
   kind: Effect
   x: number
@@ -19,12 +19,12 @@ export interface CombatEvent {
 }
 export interface Strike {
   hand: Hand
-  kind: 'punch' | 'hook' | 'counter' | 'finish'
+  kind: 'punch' | 'hook' | 'uppercut' | 'sideLeft' | 'sideRight' | 'counter' | 'finish'
   at: number
   aim: number
   hit: boolean
 }
-interface Intent { at: number; counter?: Enemy; ideal: boolean }
+type Special = 'hook' | 'uppercut'
 
 export class CombatSystem {
   readonly enemies: Enemy[] = []
@@ -36,7 +36,6 @@ export class CombatSystem {
   score = 0
   kills = 0
   combo = 0
-  short = 0
   bestCombo = 0
   counters = 0
   perfect = 0
@@ -50,8 +49,10 @@ export class CombatSystem {
   private hand: Hand = 'left'
   private nextPunch = 0
   private lastTap = -Infinity
-  private pending?: Intent
-  private directHits = 0
+  private pendingTap?: number
+  private nextSpecial = 0
+  private holdBlockedUntil = 0
+  private readonly landings: Enemy[] = []
   private comboLeft = 0
 
   constructor(readonly balance: Balance) {
@@ -60,7 +61,9 @@ export class CombatSystem {
   }
 
   get multiplier() { return this.combo >= 25 ? 3 : this.combo >= 12 ? 2 : this.combo >= 5 ? 1.5 : 1 }
-  get punchInterval() { return this.balance.punchInterval / this.build.attackRate }
+  get punchInterval() { return Math.max(this.balance.minPunchInterval, this.balance.punchInterval / this.build.attackRate) }
+
+  specialRemaining(now: number) { return Math.max(0, this.nextSpecial - now) }
 
   spawn(type: EnemyType, lane: Lane, z: number, now: number, scale = 1) {
     const enemy = createEnemy(this.nextId++, type, lane, z, Math.ceil(this.balance.enemies[type].hp * scale), now)
@@ -82,37 +85,104 @@ export class CombatSystem {
   }
 
   tap(runner: Runner, now: number) {
-    if (this.hp <= 0) return false
+    if (!this.canStrike()) return false
     const counter = this.counterTarget(runner, now)
-    const intent = { at: now, counter, ideal: !!counter && counter.until - now <= this.balance.idealWindow &&
-      now - this.lastTap >= this.punchInterval * this.balance.idealTapGap }
+    const ideal = !!counter && counter.until - now <= this.balance.idealWindow &&
+      now - this.lastTap >= this.punchInterval * this.balance.idealTapGap
     this.lastTap = now
-    if (now >= this.nextPunch) {
-      this.pending = undefined
-      this.attack(runner, now, intent)
+    if (counter) {
+      this.counter(runner, now, counter, ideal)
       return true
     }
-    if (this.nextPunch - now <= this.balance.inputBuffer && (!this.pending?.counter || counter)) this.pending = intent
+    if (this.punchReady(now)) {
+      this.pendingTap = undefined
+      this.punch(runner, now, this.build.acceleration)
+      return true
+    }
+    if (this.nextPunch - now <= this.balance.inputBuffer) this.pendingTap = now
     return false
   }
 
-  holdAttack(runner: Runner, now: number) {
-    if (this.hp <= 0 || (this.boss && this.boss.hp <= 0) || this.pending || now < this.nextPunch) return false
-    const threatened = this.enemies.some(enemy => {
-      if (enemy.hp <= 0 || (enemy.pose !== 'telegraph' && enemy.pose !== 'attack')) return false
-      if (enemy.type === 'bulldog') return true
-      const distance = enemy.z - runner.z
-      return distance >= -0.4 && distance <= 5.65 && Math.abs(enemy.x - runner.x) < 0.84
-    })
-    if (threatened) return false
-    this.attack(runner, now, { at: now, ideal: false })
+  holdAttack(runner: Runner, now: number, dash = false) {
+    if (!this.canStrike() || this.pendingTap !== undefined || !this.punchReady(now) ||
+      now < this.holdBlockedUntil) return false
+    this.punch(runner, now, dash ? 1 : undefined)
+    return true
+  }
+
+  special(runner: Runner, now: number, kind: Special) {
+    if (!this.canStrike() || this.specialRemaining(now) > 1e-9) return false
+    this.nextSpecial = now + this.balance.specialCooldown
+    const lane = laneAt(runner.x)
+    const target = this.laneTarget(runner, lane, this.balance.reach + (kind === 'hook' ? 0.28 : 0),
+      kind === 'uppercut')
+    this.beginStrike(runner, now, kind, target)
+    if (!target) return true
+
+    const chain: Chain = { visited: new Set([target.id]) }
+    if (kind === 'uppercut') {
+      this.audioCues.push('upgrade.uppercut')
+      this.hit(target, this.baseDamage * this.balance.uppercutDamage, now, 'air')
+      if (this.canDisplace(target)) {
+        const lift = target.type === 'bulldog' ? 0 : this.balance.uppercutLift
+        this.impulse(target, chain, 0, 0, this.force * this.balance.uppercutForce, now, 0.66, lift)
+        if (lift && this.build.rank('uppercut')) target.landingWave = chain
+      }
+    } else {
+      this.audioCues.push('punch.hook')
+      this.hit(target, this.baseDamage * this.balance.hookDamage, now, 'hook')
+      if (this.canDisplace(target)) {
+        this.impulse(target, chain, 0, Math.sign(target.x - runner.x) * 2.8,
+          this.force * this.balance.hookForce, now, 0.66)
+      }
+      this.hookExtras(runner, now, lane, target, chain)
+    }
+    return true
+  }
+
+  sideStrike(runner: Runner, now: number, direction: -1 | 1) {
+    if (!this.canStrike()) return false
+    const from = runner.lane
+    if (!runner.changeLane(direction)) return false
+    const first = this.laneTarget(runner, from, this.balance.reach)
+    const second = this.balance.chainTargets > (first ? 1 : 0) ?
+      this.laneTarget(runner, runner.lane, this.balance.reach) : undefined
+    this.beginStrike(runner, now, direction < 0 ? 'sideLeft' : 'sideRight', second ?? first)
+    if (!first && !second) return true
+    const chain: Chain = { visited: new Set<number>() }
+    if (first) chain.visited.add(first.id)
+    if (second) chain.visited.add(second.id)
+    this.audioCues.push('punch.hit')
+    const strike = (enemy: Enemy) => {
+      this.hit(enemy, this.baseDamage * this.balance.sideDamage, now, 'side')
+      if (this.canDisplace(enemy)) this.impulse(enemy, chain, 0, direction * this.balance.sideImpulse,
+        this.force * this.balance.sideForce, now, 0.60)
+    }
+    if (first) strike(first)
+    if (second) strike(second)
+    return true
+  }
+
+  tutorialCounter(runner: Runner, now: number, target: Enemy, skip = false) {
+    if (target.type === 'bulldog' || !this.canStrike() || this.counterTarget(runner, now) !== target) return false
+    if (skip) setPose(target, 'recovery', now, this.balance.enemies[target.type].recovery)
+    else {
+      this.lastTap = now
+      this.counter(runner, now, target, false)
+    }
     return true
   }
 
   clearInput() {
-    this.pending = undefined
+    this.pendingTap = undefined
     this.lastTap = -Infinity
   }
+
+  private canStrike() { return this.hp > 0 && (!this.boss || this.boss.hp > 0) }
+  private punchReady(now: number) { return now + 1e-9 >= this.nextPunch }
+  private get baseDamage() { return this.balance.damage * this.build.damage }
+  private get force() { return this.balance.knockback * this.build.knockback }
+  private canDisplace(enemy: Enemy) { return enemy.type !== 'bulldog' || enemy.hp <= 0 }
 
   take(id: UpgradeId) {
     if (!this.build.take(id, this.hp, this.balance.hp)) return false
@@ -121,14 +191,16 @@ export class CombatSystem {
   }
 
   update(runner: Runner, now: number, dt: number, invulnerable = false) {
-    if (this.pending && now >= this.nextPunch) {
-      const intent = this.pending
-      this.pending = undefined
-      if (now - intent.at <= this.balance.inputBuffer + dt) this.attack(runner, now, intent)
+    if (!this.canStrike()) return
+    if (this.pendingTap !== undefined && this.punchReady(now)) {
+      const at = this.pendingTap
+      this.pendingTap = undefined
+      if (now - at <= this.balance.inputBuffer + dt) this.punch(runner, now, this.build.acceleration)
     }
-    if (this.hp <= 0 || (this.boss && this.boss.hp <= 0)) return
+    if (!this.canStrike()) return
 
     const bossPose = this.boss?.pose
+    this.landings.length = 0
     this.ai.update(this.enemies, runner, now, dt, enemy => {
       if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].damage, now, 'attack', runner)
     }, enemy => {
@@ -136,7 +208,7 @@ export class CombatSystem {
       enemy.contactUntil = now + 1.2
       const side = Math.sign(enemy.x - runner.x) || (enemy.id % 2 ? 1 : -1)
       this.impulse(enemy, undefined, 0, side * 5.5, 4.3, now, 0.32)
-    })
+    }, enemy => { if (enemy.landingWave) this.landings.push(enemy) })
 
     const nextBossPose = this.boss?.pose
     if (nextBossPose !== bossPose) {
@@ -145,7 +217,8 @@ export class CombatSystem {
       else if (nextBossPose === 'retreat') this.audioCues.push('boss.jump_back')
     }
 
-    if (this.hp <= 0) return
+    if (!this.canStrike()) return
+    for (const enemy of this.landings) this.landWave(enemy, now)
     this.collisions(now)
     if (this.boss && this.boss.hp <= 0) return
     let nearby = false
@@ -173,109 +246,137 @@ export class CombatSystem {
     }
   }
 
-  private attack(runner: Runner, now: number, intent: Intent) {
-    const counter = intent.counter && intent.counter === this.counterTarget(runner, now) ? intent.counter : undefined
-    const hook = this.short === 2
-    const target = counter ?? this.pickTarget(runner, hook)
-    this.nextPunch = now + this.punchInterval
-    runner.launchDash(this.build.acceleration)
-    this.strike = { hand: this.hand, kind: counter ? 'counter' : hook ? 'hook' : 'punch',
-      at: now, aim: target ? target.x - runner.x : 0, hit: !!target }
-    this.hand = this.hand === 'left' ? 'right' : 'left'
-
+  private beginStrike(runner: Runner, now: number, kind: Strike['kind'], target?: Enemy) {
+    const hand = kind === 'sideLeft' ? 'left' : kind === 'sideRight' ? 'right' : this.hand
+    this.strike = { hand, kind, at: now, aim: target ? target.x - runner.x : 0, hit: !!target }
+    if (kind === 'punch' || kind === 'counter') this.hand = this.hand === 'left' ? 'right' : 'left'
     if (!target) {
-      this.short = 0
       this.audioCues.push('punch.miss')
       this.emit('miss', runner.x, runner.z + 1.8)
-      return
     }
+  }
 
-    this.short = hook ? 0 : this.short + 1
-    this.directHits++
-    const chain: Chain = { visited: new Set([target.id]) }
-    const base = this.balance.damage * this.build.damage
-    const ideal = !!counter && intent.ideal
-    const factor = counter ? (ideal ? this.balance.idealDamage : this.balance.counterDamage) * this.build.counterDamage : 1
-    const force = this.balance.knockback * this.build.knockback
-    const uppercut = this.build.rank('uppercut') > 0 && this.directHits % 5 === 0
-    const kind = counter ? (ideal ? 'ideal' : 'counter') : uppercut ? 'air' : hook ? 'hook' : 'hit'
-    const points = ideal ? this.balance.idealScore : counter ? this.balance.counterScore : undefined
-    if (points !== undefined) {
-      this.counters++
-      if (ideal) this.perfect++
-      this.score += points
+  private punch(runner: Runner, now: number, dash?: number) {
+    const target = this.pickTarget(runner)
+    this.nextPunch = now + this.punchInterval
+    if (dash !== undefined) runner.launchDash(dash)
+    this.beginStrike(runner, now, 'punch', target)
+    if (!target) return
+    this.audioCues.push(target.type === 'brute' || target.type === 'bulldog' ? 'punch.heavy_hit' : 'punch.hit')
+    this.hit(target, this.baseDamage, now, 'hit')
+    if (this.canDisplace(target)) this.impulse(target, { visited: new Set([target.id]) }, 0, 0, this.force, now, 0.66)
+  }
+
+  private counter(runner: Runner, now: number, target: Enemy, ideal: boolean) {
+    this.pendingTap = undefined
+    this.nextPunch = now + this.punchInterval
+    runner.launchDash(this.build.acceleration)
+    this.beginStrike(runner, now, 'counter', target)
+    const points = ideal ? this.balance.idealScore : this.balance.counterScore
+    this.counters++
+    if (ideal) this.perfect++
+    this.score += points
+    this.audioCues.push(ideal ? 'counter.perfect' : 'counter.success')
+    this.hit(target, this.baseDamage * (ideal ? this.balance.idealDamage : this.balance.counterDamage) *
+      this.build.counterDamage, now, ideal ? 'ideal' : 'counter', points)
+    this.impulse(target, { visited: new Set([target.id]) }, 0, 0, this.force * (ideal ? 1.48 : 1.24), now, 0.66)
+    if (target.hp <= 0) return
+    const boss = target.type === 'bulldog'
+    if (boss) {
+      this.audioCues.push('boss.stun')
+      target.y = Math.max(0.03, target.y)
+      target.vy = 3.4
     }
+    setPose(target, 'stunned', now, (boss ? this.balance.counterStun : this.balance.regularCounterStun) + this.build.stunBonus)
+  }
 
-    this.audioCues.push(ideal ? 'counter.perfect' : counter ? 'counter.success' : uppercut ? 'upgrade.uppercut' :
-      hook ? 'punch.hook' : target.type === 'brute' || target.type === 'bulldog' ? 'punch.heavy_hit' : 'punch.hit')
-    if (counter && uppercut) this.audioCues.push('upgrade.uppercut')
-    this.hit(target, base * (hook ? 1.5 : 1) * factor, now, kind, points)
-    if (target.type !== 'bulldog' || counter || target.hp <= 0) {
-      this.impulse(target, chain, 0, hook ? Math.sign(target.x - runner.x) * 2.8 : 0,
-        force * (hook ? 1.33 : 1) * (counter ? (ideal ? 1.48 : 1.24) : 1), now, 0.66, uppercut)
-      if (counter && target.hp > 0) {
-        const stun = (target.type === 'bulldog' ? this.balance.counterStun : this.balance.regularCounterStun) + this.build.stunBonus
-        if (target.type === 'bulldog') {
-          this.audioCues.push('boss.stun')
-          if (!uppercut) {
-            target.y = Math.max(0.03, target.y)
-            target.vy = 3.4
-          }
-        }
-        setPose(target, 'stunned', now, stun)
-      }
-    }
-
-    if (!hook) return
+  private hookExtras(runner: Runner, now: number, lane: Lane, target: Enemy, chain: Chain) {
     const wave = this.build.rank('wave') > 0
     if (wave) {
       this.audioCues.push('upgrade.shockwave')
       this.emit('wave', runner.x, target.z)
     }
-    const width = wave ? 2.05 : 1.66
-    for (const enemy of this.enemies) {
-      if (chain.visited.size >= this.balance.chainTargets) break
-      if (enemy.hp <= 0 || chain.visited.has(enemy.id) || enemy.z < runner.z - 0.3 ||
-        Math.abs(enemy.z - target.z) > (wave ? 2.0 : 1.0) || Math.abs(enemy.x - runner.x) > width) continue
+    const depth = wave ? this.balance.hookWaveDepth : this.balance.hookSplashDepth
+    const apply = (enemy: Enemy) => {
+      if (chain.visited.size >= this.balance.chainTargets) return
       chain.visited.add(enemy.id)
       const side = Math.sign(enemy.x - target.x) || (enemy.id % 2 ? -1 : 1)
-      this.hit(enemy, base * (wave ? 0.61 : 0.42), now, wave ? 'wave' : 'hook')
-      if (enemy.type !== 'bulldog' || enemy.hp <= 0) this.impulse(enemy, chain, 0, side * 6.2, force * 0.91, now, 0.60)
+      this.hit(enemy, this.baseDamage * (wave ? this.balance.hookWaveDamage : this.balance.hookSplashDamage),
+        now, wave ? 'wave' : 'hook')
+      if (this.canDisplace(enemy)) this.impulse(enemy, chain, 0, side * 6.2, this.force * 0.91, now, 0.60)
     }
-    if (this.build.rank('electric') && chain.visited.size < this.balance.chainTargets) {
-      let neighbor: Enemy | undefined
-      let distance = 3.9
+    let splash: Enemy | undefined
+    for (const otherLane of lanes) {
+      if (otherLane === lane || (!wave && Math.abs(otherLane - lane) !== 1)) continue
+      let nearest: Enemy | undefined
       for (const enemy of this.enemies) {
-        const gap = Math.hypot(enemy.x - target.x, enemy.z - target.z)
-        if (enemy.hp > 0 && !chain.visited.has(enemy.id) && enemy.z >= runner.z - 0.3 && gap < distance) {
-          neighbor = enemy
-          distance = gap
-        }
+        if (enemy.hp <= 0 || chain.visited.has(enemy.id) || enemy.y > 1.25 || laneAt(enemy.x) !== otherLane ||
+          enemy.z < runner.z - 0.28 || Math.abs(enemy.z - target.z) > depth) continue
+        if (!nearest || enemy.z < nearest.z) nearest = enemy
       }
-      if (neighbor) {
-        chain.visited.add(neighbor.id)
-        this.audioCues.push('upgrade.electric')
-        this.emit('electric', neighbor.x, neighbor.z, neighbor.id, target.x, target.z)
-        this.hit(neighbor, base * 0.55, now, 'hit')
-        if (neighbor.type !== 'bulldog' || neighbor.hp <= 0) this.impulse(neighbor, chain, 0, 0, force * 0.56, now, 0.50)
+      if (nearest && wave) apply(nearest)
+      else if (nearest && (!splash || nearest.z < splash.z)) splash = nearest
+    }
+    if (splash) apply(splash)
+    if (!this.build.rank('electric') || chain.visited.size >= this.balance.chainTargets) return
+    let neighbor: Enemy | undefined
+    let distance = this.balance.electricRadius
+    for (const enemy of this.enemies) {
+      const gap = Math.hypot(enemy.x - target.x, enemy.z - target.z)
+      if (enemy.hp > 0 && !chain.visited.has(enemy.id) && enemy.z >= runner.z - 0.28 && gap < distance) {
+        neighbor = enemy
+        distance = gap
       }
+    }
+    if (neighbor) {
+      chain.visited.add(neighbor.id)
+      this.audioCues.push('upgrade.electric')
+      this.emit('electric', neighbor.x, neighbor.z, neighbor.id, target.x, target.z)
+      this.hit(neighbor, this.baseDamage * this.balance.electricDamage, now, 'hit')
+      if (this.canDisplace(neighbor)) this.impulse(neighbor, chain, 0, 0, this.force * 0.56, now, 0.50)
     }
   }
 
-  private pickTarget(runner: Runner, hook: boolean) {
+  private landWave(source: Enemy, now: number) {
+    const chain = source.landingWave
+    source.landingWave = undefined
+    if (!chain) return
+    this.audioCues.push('upgrade.shockwave')
+    this.emit('landing', source.x, source.z)
+    for (const enemy of this.enemies) {
+      if (chain.visited.size >= this.balance.chainTargets) break
+      if (enemy.hp <= 0 || enemy.y > 0.81 || chain.visited.has(enemy.id) ||
+        Math.hypot(enemy.x - source.x, enemy.z - source.z) > this.balance.landingRadius) continue
+      chain.visited.add(enemy.id)
+      this.hit(enemy, this.baseDamage * this.balance.landingDamage, now, 'hit')
+      if (this.canDisplace(enemy)) this.impulse(enemy, chain, 0, Math.sign(enemy.x - source.x) * 3.4,
+        this.force * 0.56, now, 0.50)
+    }
+  }
+
+  private laneTarget(runner: Runner, lane: Lane, reach: number, grounded = false) {
+    let target: Enemy | undefined
+    let best = Infinity
+    for (const enemy of this.enemies) {
+      const distance = enemy.z - runner.z
+      if (enemy.hp <= 0 || distance < -0.28 || distance > reach || laneAt(enemy.x) !== lane ||
+        enemy.y > (grounded ? 0.05 : 1.25) || (grounded && (enemy.pose === 'airborne' || enemy.landingWave))) continue
+      const priority = distance + Math.abs(enemy.x - laneX(lane)) * 0.2
+      if (priority < best) { target = enemy; best = priority }
+    }
+    return target
+  }
+
+  private pickTarget(runner: Runner) {
     let target: Enemy | undefined
     let best = Infinity
     for (const enemy of this.enemies) {
       const distance = enemy.z - runner.z
       const offset = Math.abs(enemy.x - runner.x)
-      const width = enemy.type === 'bulldog' ? 1.42 : hook && this.build.rank('wave') ? 1.94 : hook ? 1.06 : 0.75
-      if (enemy.hp <= 0 || distance < -0.28 || distance > this.balance.reach + (hook ? 0.28 : 0) ||
-        offset > width || enemy.y > 1.25) continue
+      const width = enemy.type === 'bulldog' ? 1.42 : 0.75
+      if (enemy.hp <= 0 || distance < -0.28 || distance > this.balance.reach || offset > width || enemy.y > 1.25) continue
       const priority = distance + offset * 0.9
-      if (priority < best) {
-        target = enemy
-        best = priority
-      }
+      if (priority < best) { target = enemy; best = priority }
     }
     return target
   }
@@ -322,17 +423,17 @@ export class CombatSystem {
   }
 
   private impulse(enemy: Enemy, chain: Chain | undefined, depth: number, vx: number, vz: number, now: number,
-    length: number, uppercut = false) {
+    length: number, lift = 0) {
     enemy.chain = chain
     enemy.depth = depth
     enemy.vx = vx
     enemy.vz = vz * this.balance.enemies[enemy.type].resistance
     enemy.flightUntil = now + length
-    if (uppercut) {
+    if (lift) {
       enemy.y = Math.max(0.04, enemy.y)
-      enemy.vy = 5.7
+      enemy.vy = lift
     }
-    setPose(enemy, uppercut ? 'airborne' : enemy.hp <= 0 ? 'fall' : Math.abs(vx) > 3 ? 'sideFlight' : 'knockback', now, length)
+    setPose(enemy, lift ? 'airborne' : enemy.hp <= 0 ? 'fall' : Math.abs(vx) > 3 ? 'sideFlight' : 'knockback', now, length)
   }
 
   private collisions(now: number) {
@@ -394,7 +495,8 @@ export class CombatSystem {
     this.damageTaken += damage
     this.damageCause = enemy.type === 'bulldog' ? 'Удар Бульдога' : cause === 'contact' ? 'Столкновение с врагом' : 'Удар противника'
     this.invulnerableUntil = now + this.balance.immunity
-    this.combo = this.short = 0
+    this.combo = 0
+    this.holdBlockedUntil = now + this.balance.holdHurtPause
     this.audioCues.push('player.hurt')
     this.emit('hurt', runner.x, runner.z + 0.4)
   }

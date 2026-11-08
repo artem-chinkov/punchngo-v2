@@ -29,6 +29,7 @@ export interface Enemy {
   contactUntil: number
   flightUntil: number
   chain?: Chain
+  landingWave?: Chain
   depth: number
   removeAt: number
   burnTicks: number
@@ -65,14 +66,14 @@ export class EnemyAI {
   constructor(private readonly balance: Balance) {}
 
   update(enemies: Enemy[], runner: Runner, now: number, dt: number,
-    strike: (enemy: Enemy) => void, contact: (enemy: Enemy) => void) {
+    strike: (enemy: Enemy) => void, contact: (enemy: Enemy) => void, land: (enemy: Enemy) => void) {
     let bossThreat = false
     let active = false
     let candidate: Enemy | undefined
     for (const enemy of enemies) {
       enemy.previousX = enemy.x
       enemy.previousZ = enemy.z
-      if (this.advanceFlight(enemy, runner, now, dt) || enemy.hp <= 0) continue
+      if (this.advanceFlight(enemy, runner, now, dt, land) || enemy.hp <= 0) continue
       if (enemy.type === 'bulldog') {
         this.boss(enemy, runner, now, dt, strike)
         bossThreat = enemy.pose === 'telegraph' || enemy.pose === 'attack' || enemy.z - runner.z < 4.4
@@ -96,7 +97,7 @@ export class EnemyAI {
     }
   }
 
-  private advanceFlight(enemy: Enemy, runner: Runner, now: number, dt: number) {
+  private advanceFlight(enemy: Enemy, runner: Runner, now: number, dt: number, land: (enemy: Enemy) => void) {
     if (now >= enemy.flightUntil && enemy.y <= 0) {
       enemy.chain = undefined
       if (enemy.pose === 'airborne' || enemy.pose === 'sideFlight' || enemy.pose === 'knockback' || enemy.pose === 'hit') {
@@ -116,8 +117,9 @@ export class EnemyAI {
     enemy.vz *= drag
     enemy.y = Math.max(0, enemy.y + enemy.vy * dt)
     enemy.vy = enemy.y > 0 ? enemy.vy - 21 * dt : 0
-    if (wasAirborne && enemy.y === 0 && enemy.pose === 'airborne') {
-      setPose(enemy, enemy.hp > 0 ? 'knockback' : 'fall', now, 0.20)
+    if (wasAirborne && enemy.y === 0) {
+      if (enemy.pose === 'airborne') setPose(enemy, enemy.hp > 0 ? 'knockback' : 'fall', now, 0.20)
+      land(enemy)
     }
     return true
   }

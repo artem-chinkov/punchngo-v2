@@ -11,7 +11,7 @@ export const enemyPoses = [
 ] as const
 export type EnemyPose = typeof enemyPoses[number]
 
-export const handPoses = ['idle', 'run', 'punch', 'hook', 'counter', 'dash', 'hurt', 'knockout', 'finish'] as const
+export const handPoses = ['idle', 'run', 'punch', 'hook', 'uppercut', 'sideLeft', 'sideRight', 'counter', 'dash', 'hurt', 'knockout', 'finish'] as const
 export type HandPose = typeof handPoses[number]
 export type AnimationState = EnemyPose | HandPose
 export type AssetId =

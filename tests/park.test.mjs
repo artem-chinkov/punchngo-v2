@@ -70,18 +70,21 @@ test('lane changes are bounded, ease across 180 ms and affect camera-relative ai
   assert.equal(right.hp, 120)
   const view = new PerspectiveProjector(360, 640, run.runner.z, defaultWorld, run.runner.x)
   assert.ok(view.project(left.x, left.z).x < view.project(right.x, right.z).x)
-  run.swipe(1)
-  run.swipe(1)
+  assert.equal(run.swipe(1), true)
+  assert.equal(run.swipe(1), false)
+  play(run, 0.20, true)
+  assert.equal(run.swipe(1), true)
   play(run, 0.20, true)
   assert.equal(run.runner.x, laneX(1))
 })
 
-test('gesture capture, swipe suppression, multiple pointers, and blur or visibility cancellation', () => {
+test('four gestures are exclusive, holding stops on swipe or release, and tutorial requires a fresh tap', () => {
   const oldWindow = globalThis.window
   const oldDocument = globalThis.document
   globalThis.window = new EventTarget()
   globalThis.document = new EventTarget()
   class Canvas extends EventTarget {
+    clientWidth = 375
     capture
     setPointerCapture(id) { this.capture = id }
     hasPointerCapture(id) { return this.capture === id }
@@ -89,49 +92,72 @@ test('gesture capture, swipe suppression, multiple pointers, and blur or visibil
   }
   const canvas = new Canvas()
   const actions = []
-  const input = new TouchController(canvas, () => true, () => actions.push('tap'), lane => actions.push(lane))
-  const pointer = (type, id, x, y, timeStamp) => {
-    const event = Object.assign(new Event(type, { cancelable: true }), { pointerId: id, button: 0, clientX: x, clientY: y })
-    Object.defineProperty(event, 'timeStamp', { value: timeStamp })
-    canvas.dispatchEvent(event)
+  let now = 0
+  let mode = 'play'
+  const input = new TouchController(canvas, () => mode,
+    source => actions.push('tap:' + source), swipe => actions.push(swipe), () => now)
+  const pointer = (type, x = 80, y = 80, id = 1, primary = true) => {
+    now += 20
+    canvas.dispatchEvent(Object.assign(new Event('pointer' + type, { cancelable: true }),
+      { pointerId: id, isPrimary: primary, button: 0, clientX: x, clientY: y }))
   }
   try {
-    pointer('pointerdown', 1, 80, 80, 0)
-    pointer('pointerup', 2, 80, 80, 20)
-    pointer('pointerup', 1, 80, 80, 30)
-    pointer('pointerdown', 1, 90, 80, 50)
-    pointer('pointermove', 1, 46, 82, 75)
-    pointer('pointerup', 1, 22, 82, 100)
-    pointer('pointerdown', 1, 70, 80, 120)
-    pointer('pointerup', 1, 112, 84, 190)
-    pointer('pointerdown', 1, 80, 80, 210)
-    pointer('pointerup', 1, 80, 125, 240)
-    pointer('pointerdown', 1, 80, 80, 260)
+    pointer('down')
+    pointer('up', 80, 80, 2, false)
+    pointer('up')
+    for (const [x, y] of [[40, 80], [120, 80], [80, 40], [80, 120]]) {
+      pointer('down')
+      pointer('move', x, y)
+      pointer('up', 120, 120)
+    }
+    pointer('down')
+    pointer('up', 115, 115)
+    pointer('down')
+    now += 149
+    assert.equal(input.hold(), undefined)
+    now++
+    assert.deepEqual(input.hold(), { dash: true })
+    input.acceptHold()
+    assert.deepEqual(input.hold(), { dash: false })
+    pointer('up')
+    assert.equal(input.hold(), undefined)
+
+    pointer('down')
+    now += 160
+    assert.ok(input.hold())
+    pointer('move', 120, 80)
+    assert.equal(input.hold(), undefined)
+    pointer('up')
+    pointer('down')
     globalThis.window.dispatchEvent(new Event('blur'))
-    pointer('pointerup', 1, 80, 80, 310)
-    pointer('pointerdown', 1, 80, 80, 320)
+    pointer('up')
+    pointer('down')
     globalThis.document.dispatchEvent(new Event('visibilitychange'))
-    pointer('pointerup', 1, 80, 80, 350)
-    pointer('pointerdown', 1, 80, 80, 370)
-    pointer('pointerup', 1, 80, 80, 410)
-    pointer('pointerdown', 1, 80, 80, 450)
-    assert.equal(input.isHolding(629), false)
-    assert.equal(input.isHolding(630), true)
-    pointer('pointerup', 1, 80, 80, 640)
-    assert.equal(input.isHolding(641), false)
+    pointer('up')
+    pointer('down')
+    pointer('cancel')
+    pointer('up')
 
-    pointer('pointerdown', 1, 80, 80, 670)
-    assert.equal(input.isHolding(850), true)
-    pointer('pointermove', 1, 118, 80, 860)
-    assert.equal(input.isHolding(900), false)
-    pointer('pointerup', 1, 123, 80, 920)
-
-    pointer('pointerdown', 1, 80, 80, 940)
-    assert.equal(input.isHolding(1120), true)
-    globalThis.window.dispatchEvent(new Event('blur'))
-    assert.equal(input.isHolding(1130), false)
-    pointer('pointerup', 1, 80, 80, 1140)
-    assert.deepEqual(actions, ['tap', -1, 1, 'tap', 1])
+    mode = 'off'
+    pointer('down')
+    pointer('up')
+    mode = 'play'
+    pointer('down')
+    now += 160
+    assert.ok(input.hold())
+    input.cancel()
+    mode = 'counter'
+    pointer('down', 80, 80, 2, false)
+    pointer('up')
+    pointer('down')
+    pointer('up', 80, 120)
+    pointer('down')
+    now += 180
+    assert.equal(input.hold(), undefined)
+    pointer('up')
+    pointer('down')
+    pointer('up')
+    assert.deepEqual(actions, ['tap:play', 'left', 'right', 'up', 'down', 'right', 'tap:counter'])
   } finally {
     input.destroy()
     globalThis.window = oldWindow
@@ -163,21 +189,18 @@ test('punches respect cooldown, buffer expiration and maximum dash speed', () =>
   }
 })
 
-test('third successive hit hooks at 150%, then normal cadence resumes; a miss preserves long combo', () => {
+test('ordinary hits alternate without an automatic hook; a miss preserves combo', () => {
   const run = newRun()
   const { combat, runner } = run
   const a = place(run, 'thug', 0, 2, 300)
   const neighbor = place(run, 'thug', 1, 2.3, 300)
-  combat.tap(runner, 0)
-  assert.equal(combat.strike.hand, 'left')
-  combat.tap(runner, 0.25)
-  assert.equal(combat.strike.hand, 'right')
-  combat.tap(runner, 0.5)
-  assert.equal(combat.strike.kind, 'hook')
-  assert.equal(a.hp, 300 - run.balance.damage * 3.5)
-  assert.ok(neighbor.hp < 300)
-  combat.tap(runner, 0.75)
-  assert.equal(combat.strike.kind, 'punch')
+  for (let i = 0; i < 4; i++) {
+    assert.equal(combat.tap(runner, i * 0.25), true)
+    assert.equal(combat.strike.kind, 'punch')
+    assert.equal(combat.strike.hand, i % 2 === 0 ? 'left' : 'right')
+  }
+  assert.equal(a.hp, 300 - run.balance.damage * 4)
+  assert.equal(neighbor.hp, 300)
   const combo = combat.combo
   combat.enemies.length = 0
   combat.tap(runner, 1)
@@ -185,6 +208,64 @@ test('third successive hit hooks at 150%, then normal cadence resumes; a miss pr
   run.start()
   play(run, 0.20)
   assert.equal(combat.combo, combo)
+})
+
+test('vertical swipes share one cooldown without consuming or borrowing the ordinary punch timer', () => {
+  const run = newRun()
+  run.start()
+  const { combat, runner, balance } = run
+  const target = place(run, 'thug', 0, 2, 400)
+  const left = place(run, 'thug', -1, 2.25, 400)
+  const right = place(run, 'thug', 1, 2.5, 400)
+  assert.equal(run.special('hook'), true)
+  assert.equal(combat.strike.kind, 'hook')
+  assert.equal(target.hp, 400 - balance.damage * 1.5)
+  assert.equal(left.hp, 400 - balance.damage * balance.hookSplashDamage)
+  assert.equal(right.hp, 400)
+  assert.equal(run.special('uppercut'), false)
+  assert.equal(combat.strike.kind, 'hook')
+  assert.equal(runner.dash, 0)
+  assert.equal(run.tap(), true)
+  assert.equal(combat.strike.kind, 'punch')
+  run.now = 0.699
+  assert.equal(run.special('uppercut'), false)
+  run.now = 0.7
+  assert.equal(run.special('uppercut'), true)
+  assert.equal(combat.strike.kind, 'uppercut')
+  assert.equal(target.hp, 400 - balance.damage * (1.5 + 1 + 1.25))
+  assert.equal(target.pose, 'airborne')
+  assert.ok(target.y > 0 && target.vy > 0)
+  assert.equal(runner.lane, 0)
+  assert.equal(run.special('hook'), false)
+  run.now = 1.4
+  combat.enemies.length = 0
+  assert.equal(run.special('hook'), true)
+  assert.equal(combat.strike.hit, false)
+  assert.equal(run.special('uppercut'), false)
+})
+
+test('side swipe hits each of two lanes once; another swipe during travel or off the road has no effect', () => {
+  const run = newRun()
+  run.start()
+  const { combat, runner, balance } = run
+  const center = place(run, 'thug', 0, 1.6)
+  const otherCenter = place(run, 'thug', 0, 2.4)
+  const right = place(run, 'thug', 1, 1.8)
+  const left = place(run, 'thug', -1, 1.7)
+  assert.equal(run.swipe(1), true)
+  assert.equal(runner.lane, 1)
+  assert.equal(runner.x, 0)
+  assert.equal(combat.strike.kind, 'sideRight')
+  for (const hit of [center, right]) assert.equal(hit.hp, 120 - balance.damage * 0.7)
+  for (const missed of [left, otherCenter]) assert.equal(missed.hp, 120)
+  assert.equal(runner.dash, 0)
+  assert.equal(run.swipe(-1), false)
+  runner.advance(0.18)
+  assert.equal(run.swipe(1), false)
+  assert.deepEqual(events(combat, 'side').map(e => e.enemy), [center.id, right.id])
+  assert.equal(events(combat, 'hit').length, 0)
+  assert.equal(run.swipe(-1), true)
+  assert.equal(combat.strike.kind, 'sideLeft')
 })
 
 test('group contact spends HP once, knocks enemies aside and respects invulnerability', () => {
@@ -347,28 +428,51 @@ test('all upgrade ranks cap correctly; healing, power, speed, dash, chain and pr
   assert.ok(boss.vz > match.balance.knockback)
 })
 
-test('wave, electricity, fire and uppercut all have real effects together', () => {
+test('wave and electricity apply only to the manual hook and share unique targets with fire', () => {
   const run = newRun()
   const { combat, runner } = run
   for (const id of ['wave', 'electric', 'fire', 'uppercut']) combat.take(id)
-  const primary = place(run, 'thug', 0, 1.8, 400)
-  const outer = place(run, 'thug', 1, 3.25, 400)
-  const distant = place(run, 'thug', -1, 4.5, 400)
-  for (let i = 0; i < 3; i++) combat.tap(runner, i * 0.25)
-  assert.ok(outer.hp < 400)
-  assert.ok(distant.hp < 400)
+  runner.changeLane(-1)
+  runner.advance(0.18)
+  const primary = place(run, 'thug', -1, 1.8, 400)
+  const middle = place(run, 'thug', 0, 2.3, 400)
+  const outer = place(run, 'thug', 1, 2.6, 400)
+  const extra = place(run, 'thug', -1, 4.5, 400)
+  for (let i = 0; i < 5; i++) combat.tap(runner, i * 0.25)
+  assert.equal(events(combat, 'wave').length, 0)
+  assert.equal(events(combat, 'electric').length, 0)
+  assert.equal(primary.pose, 'knockback')
+  assert.equal(middle.hp, 400)
+  assert.equal(combat.special(runner, 1.01, 'hook'), true)
+  assert.ok(middle.hp < 400 && outer.hp < 400 && extra.hp < 400)
   assert.equal(events(combat, 'electric').length, 1)
-  assert.ok(events(combat, 'wave').length > 0)
+  assert.equal(events(combat, 'fire').filter(e => e.enemy === primary.id).length, 1)
   assert.equal(primary.burnTicks, 4)
   const hp = primary.hp
-  combat.update(runner, 0.74, dt, true)
+  combat.update(runner, 1.02, dt, true)
   assert.ok(primary.hp < hp)
-  combat.tap(runner, 0.75)
-  combat.tap(runner, 1)
-  assert.equal(primary.pose, 'airborne')
-  assert.ok(primary.vy > 0)
-  combat.update(runner, 1.05, dt, true)
-  assert.ok(primary.y > 0.04)
+})
+
+test('an upgraded uppercut makes one damaging wave on physical landing even if its source was defeated', () => {
+  for (const upgraded of [false, true]) {
+    const run = newRun()
+    const { combat, runner, balance } = run
+    balance.chainDepth = 0
+    if (upgraded) combat.take('uppercut')
+    const primary = place(run, 'thug', 0, 1.7, 15)
+    assert.equal(combat.special(runner, 0, 'uppercut'), true)
+    assert.equal(primary.hp, 0)
+    assert.equal(primary.pose, 'airborne')
+    combat.update(runner, dt, dt, true)
+    assert.ok(primary.y > 0.04)
+    assert.equal(events(combat, 'landing').length, 0)
+    const other = place(run, 'thug', 1, 5.1, 120)
+    for (let i = 2; i <= 68; i++) combat.update(runner, i * dt, dt, true)
+    assert.equal(primary.y, 0)
+    assert.equal(primary.landingWave, undefined)
+    assert.equal(events(combat, 'landing').length, upgraded ? 1 : 0)
+    assert.equal(other.hp, 120 - (upgraded ? balance.damage * balance.landingDamage : 0))
+  }
 })
 
 test('ricochet turns toward a neighbor and domino strengthens the actual collision', () => {
@@ -568,26 +672,46 @@ test('resuming after a suspended frame discards wall time and advances on the ne
   assert.ok(run.runner.z > position)
 })
 
-test('hold repeats at the combat cooldown, dashes on misses and leaves counters to taps', () => {
+test('hold repeats on red and yellow without counters, and only its first accepted hit dashes', () => {
   const run = newRun()
   const { combat, runner } = run
   combat.take('flurry')
+  combat.take('dash')
   const interval = combat.punchInterval
-  assert.equal(combat.holdAttack(runner, 0), true)
+  assert.equal(combat.holdAttack(runner, 0, true), true)
+  assert.equal(runner.dash, run.balance.dashMultiplier - 1)
+  runner.advance(interval)
+  const dash = runner.dash
   assert.equal(combat.holdAttack(runner, interval - 0.001), false)
   assert.equal(combat.holdAttack(runner, interval), true)
+  assert.equal(runner.dash, dash)
   assert.equal(events(combat, 'miss').length, 2)
-  assert.ok(runner.dash > 0)
-  const enemy = place(run)
-  setPose(enemy, 'telegraph', 0.5, 0.50)
-  assert.equal(combat.holdAttack(runner, 0.6), false)
-  assert.equal(combat.holdAttack(runner, 0.96), false)
+
+  const boss = place(run, 'bulldog', 0, 2, 1000)
+  setPose(boss, 'telegraph', 0.5, 0.55)
+  assert.equal(combat.holdAttack(runner, 0.6), true)
+  assert.equal(boss.pose, 'telegraph')
+  assert.equal(combat.counterTarget(runner, 0.98), boss)
+  assert.equal(combat.holdAttack(runner, 0.98), true)
+  assert.equal(combat.strike.kind, 'punch')
   assert.equal(combat.counters, 0)
-  assert.equal(combat.tap(runner, 0.96), true)
+  assert.equal(combat.tap(runner, 1.01), true)
   assert.equal(combat.perfect, 1)
-  assert.equal(enemy.pose, 'stunned')
-  assert.equal(combat.holdAttack(runner, 0.96 + interval), true)
-  assert.equal(combat.counters, 1)
+  assert.equal(boss.pose, 'stunned')
+})
+
+test('a nonlethal hit pauses autoattacks only briefly, even during an active enemy attack', () => {
+  const run = newRun()
+  run.start()
+  const enemy = place(run, 'thug', 0, 1.4)
+  setPose(enemy, 'telegraph', run.now, dt)
+  assert.equal(run.update(dt, false, { dash: false }), false)
+  assert.ok(run.combat.hp < run.balance.hp)
+  assert.equal(enemy.pose, 'attack')
+  const damagedAt = run.now
+  assert.equal(run.combat.holdAttack(run.runner, damagedAt + run.balance.holdHurtPause - 0.001), false)
+  assert.equal(run.combat.holdAttack(run.runner, damagedAt + run.balance.holdHurtPause), true)
+  assert.equal(run.combat.strike.kind, 'punch')
 })
 
 test('a held attack passes through the normal run and pauses immediately when it earns a level', () => {
@@ -596,13 +720,13 @@ test('a held attack passes through the normal run and pauses immediately when it
   run.combat.xp = levelXP(2) - run.balance.enemies.thug.xp
   const enemy = place(run, 'thug', 0, 1.4, 1)
   setPose(enemy, 'recovery', run.now, 0.25)
-  run.update(dt, false, true)
+  run.update(dt, false, { dash: false })
   assert.equal(run.combat.kills, 1)
   assert.equal(run.phase, 'upgrade')
   const position = run.runner.z
   const time = run.now
   const strike = run.combat.strike
-  for (let i = 0; i < 40; i++) run.update(dt, false, true)
+  for (let i = 0; i < 40; i++) run.update(dt, false, { dash: false })
   assert.equal(run.runner.z, position)
   assert.equal(run.now, time)
   assert.equal(run.combat.strike, strike)
@@ -663,7 +787,7 @@ test('camera height changes vertical perspective independently of horizon, scale
   assert.ok(make(0.70, 0.35).horizon < low.horizon)
 })
 
-test('combat emits one primary punch cue for a tap or accepted hold, including a wide hook', () => {
+test('combat emits one primary punch cue per accepted strike, including a manual hook', () => {
   const run = newRun()
   run.start()
   assert.equal(run.tap(), true)
@@ -675,7 +799,7 @@ test('combat emits one primary punch cue for a tap or accepted hold, including a
     run.now += run.combat.punchInterval + 0.01
     place(run, 'thug')
     if (index === 2) place(run, 'thug', 1, 2.4)
-    assert.equal(run.combat.holdAttack(run.runner, run.now), true)
+    assert.equal(index === 2 ? run.special('hook') : run.combat.holdAttack(run.runner, run.now), true)
     assert.deepEqual(run.combat.audioCues.filter(cue => cue.startsWith('punch.')), [expected])
   }
 })
@@ -700,4 +824,101 @@ test('Bulldog cues follow actual attacks, and phase II begins on exactly half HP
   assert.equal(duel.tap(), true)
   assert.equal(target.bossPhase, 2)
   assert.equal(events(duel.combat, 'rage').length, 1)
+})
+
+test('special attacks damage Bulldog without changing his windup, height or position', () => {
+  const run = newRun()
+  run.debugBoss()
+  const { combat, runner, balance } = run
+  const boss = combat.boss
+  boss.z = runner.z + 2
+  boss.hp = boss.maxHp = 1000
+  const telegraphUntil = run.now + 1
+  setPose(boss, 'telegraph', run.now, 1)
+  assert.equal(run.special('hook'), true)
+  run.now += balance.specialCooldown
+  assert.equal(run.special('uppercut'), true)
+  assert.equal(run.swipe(1), true)
+  assert.equal(boss.hp, 1000 - balance.damage * (1.5 + 1.25 + 0.7))
+  assert.equal(boss.pose, 'telegraph')
+  assert.equal(boss.until, telegraphUntil)
+  assert.equal(boss.y, 0)
+  assert.equal(boss.vz, 0)
+})
+
+test('the first eligible yellow stops a fixed-step run before a held punch and waits for one real counter', () => {
+  const run = newRun()
+  run.start()
+  const enemy = place(run, 'thug', 0, 2.1)
+  setPose(enemy, 'telegraph', 0, 0.24)
+  assert.equal(run.update(dt, false, { dash: true }, true), false)
+  assert.equal(run.tutorialTarget, enemy)
+  assert.equal(run.combat.strike, undefined)
+  const snapshot = [run.now, run.runner.z, enemy.z, enemy.hp, run.combat.hp, run.combat.score, run.combat.xp]
+  for (let i = 0; i < 180; i++) run.update(dt, false, { dash: true }, true)
+  assert.deepEqual([run.now, run.runner.z, enemy.z, enemy.hp, run.combat.hp, run.combat.score, run.combat.xp], snapshot)
+  assert.equal(run.tap(), false)
+  assert.equal(run.swipe(1), false)
+  assert.equal(run.special('hook'), false)
+  assert.equal(run.confirmTutorialCounter(), true)
+  assert.equal(run.confirmTutorialCounter(), false)
+  assert.equal(enemy.hp, snapshot[3] - run.balance.damage * run.balance.counterDamage)
+  assert.equal(enemy.pose, 'stunned')
+  assert.equal(run.combat.score, run.balance.counterScore)
+  assert.equal(run.combat.counters, 1)
+  assert.equal(run.combat.perfect, 0)
+  assert.equal(run.combat.audioCues.filter(cue => cue === 'counter.success').length, 1)
+  run.update(dt)
+  assert.ok(run.now > snapshot[0])
+  assert.ok(run.runner.z > snapshot[1])
+})
+
+test('skipping training recovers the live enemy without giving damage, points or XP', () => {
+  const run = newRun()
+  run.start()
+  const enemy = place(run, 'quick', 0, 2.5)
+  setPose(enemy, 'telegraph', 0, 0.21)
+  run.update(dt, false, undefined, true)
+  assert.equal(run.tutorialTarget, enemy)
+  assert.equal(run.confirmTutorialCounter(true), true)
+  assert.equal(enemy.pose, 'recovery')
+  play(run, 0.26)
+  assert.equal(enemy.hp, 120)
+  assert.equal(run.combat.hp, run.balance.hp)
+  assert.equal(run.combat.score, 0)
+  assert.equal(run.combat.xp, 0)
+  assert.equal(run.combat.counters, 0)
+})
+
+test('onboarding preserves independent stages and restarts them without deleting records', async () => {
+  const { Onboarding, readTutorial } = await load('game/Onboarding')
+  const values = new Map([['punchngo.v2.records', 'keep']])
+  const storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) }
+  const onboarding = new Onboarding(storage)
+  const run = newRun()
+  assert.equal(onboarding.showControls, true)
+  assert.equal(onboarding.teachCounter, true)
+  assert.equal(onboarding.startCountdown(0), true)
+  assert.equal(onboarding.startCountdown(0), false)
+  assert.deepEqual(readTutorial(storage), { controls: true, counter: false })
+  assert.equal(onboarding.count(0.1), 0)
+  assert.equal(onboarding.count(0.2), 3)
+  assert.equal(onboarding.count(1.2), 2)
+  assert.equal(onboarding.count(2.2), 1)
+  assert.equal(onboarding.readyToRun(3.17), false)
+  assert.equal(run.tap(), false)
+  run.update(3)
+  assert.equal(run.now, 0)
+  assert.equal(onboarding.readyToRun(3.19), true)
+  run.start()
+  assert.equal(run.combat.strike, undefined)
+  onboarding.finishCounter(4, false)
+  assert.equal(onboarding.showingSuccess(4.2), true)
+  assert.equal(onboarding.showingSuccess(4.9), false)
+  assert.deepEqual(readTutorial(storage), { controls: true, counter: true })
+  assert.equal(new Onboarding(storage).showControls, false)
+  assert.equal(new Onboarding(storage).teachCounter, false)
+  onboarding.reset()
+  assert.deepEqual(readTutorial(storage), { controls: false, counter: false })
+  assert.equal(values.get('punchngo.v2.records'), 'keep')
 })

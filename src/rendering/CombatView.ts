@@ -11,7 +11,7 @@ const hands = ['left', 'right'] as const
 const colors: Record<Effect, number> = {
   hit: 0xffefbd, hook: 0xffa554, counter: 0xffdc66, ideal: 0xfff383, chain: 0x73efd1,
   air: 0xf7d17d, wave: 0xffb975, electric: 0x84efff, fire: 0xff7537, hurt: 0xf05142,
-  miss: 0xe5dbac, rage: 0xf34a49, finish: 0xffcf60, level: 0x9effce,
+  miss: 0xe5dbac, rage: 0xf34a49, finish: 0xffcf60, level: 0x9effce, side: 0xffc26e, landing: 0xffd686,
 }
 interface Particle extends CombatEvent { at: number }
 interface Slot {
@@ -21,6 +21,7 @@ interface Slot {
   freezeUntil: number
   frozeAt: number
 }
+export interface TutorialFocus { x: number; y: number; rx: number; ry: number }
 export interface AnimationPreview { type: EnemyType | 'hero'; pose: AnimationState; start: number }
 
 export class CombatView {
@@ -33,6 +34,8 @@ export class CombatView {
   private readonly previewImage: Phaser.GameObjects.Image
   private readonly previewEnemy = createEnemy(-1, 'thug', 0, 0, 100, 0)
   private readonly particles: Particle[] = []
+  private readonly reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
+  tutorialFocus?: TutorialFocus
   private frame = 0
   private hurtAt = -Infinity
   private defeatAt = -Infinity
@@ -63,7 +66,8 @@ export class CombatView {
       if (this.particles.length >= 30) this.particles.shift()
       this.particles.push({ ...event, at: now })
       if (event.enemy !== undefined && (event.kind === 'hit' || event.kind === 'hook' ||
-        event.kind === 'counter' || event.kind === 'ideal' || event.kind === 'chain')) {
+        event.kind === 'counter' || event.kind === 'ideal' || event.kind === 'chain' ||
+        event.kind === 'side' || event.kind === 'air')) {
         const slot = this.slots.find(item => item.id === event.enemy)
         if (slot) {
           slot.frozeAt = now
@@ -75,6 +79,7 @@ export class CombatView {
 
   draw(run: ParkRun, projector: PerspectiveProjector, wall: number, debug: boolean, preview?: AnimationPreview) {
     this.frame++
+    this.tutorialFocus = undefined
     this.shadows.clear()
     this.marks.clear()
     this.effects.clear()
@@ -99,7 +104,15 @@ export class CombatView {
       }
       slot.seen = this.frame
       const poseTime = now < slot.freezeUntil ? slot.frozeAt : now
-      this.actor(slot.image, enemy, point, poseTime, counter === enemy, run)
+      const focus = run.tutorialTarget === enemy
+      this.actor(slot.image, enemy, point, poseTime, counter === enemy, run, focus, wall)
+      if (focus) {
+        const image = slot.image
+        this.tutorialFocus = {
+          x: image.x / width, y: (image.y - image.displayHeight * 0.52) / height,
+          rx: (image.displayWidth * 0.60 + 14) / width, ry: (image.displayHeight * 0.62 + 24) / height,
+        }
+      }
     }
     for (const slot of this.slots) if (slot.seen !== this.frame && slot.id) {
       slot.id = 0
@@ -144,7 +157,7 @@ export class CombatView {
   }
 
   private actor(image: Phaser.GameObjects.Image, enemy: Enemy, point: ReturnType<PerspectiveProjector['project']>,
-    now: number, counter: boolean, run: ParkRun) {
+    now: number, counter: boolean, run: ParkRun, focus = false, wall = 0) {
     const { pose, type } = enemy
     const age = Math.max(0, now - enemy.since)
     const moving = pose === 'approach' || pose === 'positioning' || pose === 'retreat'
@@ -194,7 +207,14 @@ export class CombatView {
       .fillEllipse(point.x, point.y + 1, 67 * scale, 14 * scale)
     if (enemy.hp <= 0) return
     const top = y - image.displayHeight - 7
-    if (pose === 'telegraph') this.warning(x, top, counter, enemy.until - run.now <= run.balance.idealWindow)
+    if (focus) {
+      const alpha = 0.62 + (this.reducedMotion.matches ? 0 : Math.sin(wall * 5) * 0.14)
+      this.marks.lineStyle(2, 0xff7f43, alpha).strokeRoundedRect(
+        x - image.displayWidth * 0.46, y - image.displayHeight * 0.90,
+        image.displayWidth * 0.92, image.displayHeight * 0.90, 12)
+    }
+    if (pose === 'telegraph') this.warning(x, top, counter,
+      enemy.until - run.now <= run.balance.idealWindow, focus ? 1.40 + (this.reducedMotion.matches ? 0 : Math.sin(wall * 6) * 0.14) : 1)
     if (pose === 'laneTell') {
       const side = Math.sign(enemy.destination - enemy.lane)
       this.marks.fillStyle(0x272622).fillCircle(x, top, 10)
@@ -231,37 +251,48 @@ export class CombatView {
       if (preview?.type === 'hero') {
         pose = preview.pose as HandPose
         const elapsed = (wall - preview.start) % 0.85
-        if (pose === 'punch' || pose === 'hook' || pose === 'counter' || pose === 'finish') {
+        if (pose === 'punch' || pose === 'hook' || pose === 'uppercut' || pose === 'sideLeft' ||
+          pose === 'sideRight' || pose === 'counter' || pose === 'finish') {
           strike = { hand, kind: pose, at: now, aim: 0, hit: true }
-          age = hand === 'right' ? elapsed : 1
+          age = hand === (pose === 'sideLeft' ? 'left' : 'right') ? elapsed : 1
         }
       }
-      const duration = strike?.kind === 'finish' ? 0.42 : strike?.kind === 'hook' ? 0.27 : 0.23
+      const kind = strike?.kind
+      const lateral = kind === 'sideLeft' ? -1 : kind === 'sideRight' ? 1 : 0
+      const duration = kind === 'finish' ? 0.42 : kind === 'hook' ? 0.27 :
+        kind === 'uppercut' ? 0.30 : lateral ? 0.18 : Math.min(0.23, run.combat.punchInterval)
       const time = Math.min(1, Math.max(0, age / duration))
       const extension = strike ? Math.sin(time ** 0.61 * Math.PI) : 0
-      const swing = strike?.kind === 'hook' ? 128 : strike?.kind === 'finish' ? 120 : 92
+      const swing = kind === 'hook' ? 128 : kind === 'finish' ? 120 : 92
       if (strike && time < 1) pose = strike.kind
-      if (demoHurt > 0.2) pose = 'hurt'
+      if (demoHurt > 0.60) pose = 'hurt'
       if (fall > 0) pose = 'knockout'
       const bob = Math.sin((preview?.type === 'hero' ? wall : now) * (pose === 'dash' ? 15 : 9) + side * 1.2) *
         (pose === 'dash' ? 10 : pose === 'run' || run.active ? 6 : 2)
       const aim = strike ? Math.max(-45, Math.min(45, strike.aim * 25)) : 0
-      const x = width / 2 + side * (102 + fall * 24) + (aim - side * swing) * extension
-      const y = height - 103 + bob - extension * height * 0.31 + fall * 122 + demoHurt * 17
-      const scale = 1 - extension * 0.33 + (strike?.kind === 'counter' ? extension * 0.12 : 0)
+      const x = width / 2 + side * (102 + fall * 24) + (lateral
+        ? lateral * (-98 + time * 198) * extension : (aim - side * swing) * extension)
+      const lift = kind === 'uppercut' ? extension * (time * 0.74 - 0.11) :
+        lateral ? extension * 0.14 : extension * 0.31
+      const y = height - 103 + bob - lift * height + fall * 122 + demoHurt * 17
+      const scale = 1 - extension * 0.33 + (kind === 'counter' ? extension * 0.12 : 0)
       const id = hand === 'left' ? 'fist.left' : 'fist.right'
       this.assets.pose(image, id, pose, strike ? age : now)
       this.assets.place(image, id, x, y, scale)
       image.setRotation(side * (0.11 + fall * 0.6 + demoHurt * 0.24) +
-        extension * side * (strike?.kind === 'hook' ? 0.62 : strike?.kind === 'counter' ? -0.24 : -0.10))
+        extension * side * (kind === 'hook' ? 0.62 : kind === 'counter' ? -0.24 :
+          kind === 'uppercut' ? -0.52 : lateral ? -0.78 : -0.10))
     }
   }
 
-  private warning(x: number, y: number, counter: boolean, ideal: boolean) {
+  private warning(x: number, y: number, counter: boolean, ideal: boolean, scale = 1) {
     const color = counter ? ideal ? 0xfff0a5 : 0xffcf4c : 0xff594b
-    this.marks.fillStyle(0x272423).fillCircle(x, y, counter ? 12 : 10)
-    this.marks.lineStyle(counter && ideal ? 3 : 2, color).strokeCircle(x, y, counter ? 12 : 10)
-    this.marks.fillStyle(color).fillRect(x - 2, y - 6, 4, 8).fillCircle(x, y + 5, 2)
+    const radius = (counter ? 12 : 10) * scale
+    if (scale > 1) this.marks.fillStyle(0xffcf4c, 0.30).fillCircle(x, y, radius + 5)
+    this.marks.fillStyle(0x272423).fillCircle(x, y, radius)
+    this.marks.lineStyle((counter && ideal ? 3 : 2) * scale, color).strokeCircle(x, y, radius)
+    this.marks.fillStyle(color).fillRect(x - 2 * scale, y - 6 * scale, 4 * scale, 8 * scale)
+      .fillCircle(x, y + 5 * scale, 2 * scale)
   }
 
   private drawParticles(projector: PerspectiveProjector, now: number) {
@@ -278,7 +309,7 @@ export class CombatView {
         continue
       }
       if (point.distance < -2) continue
-      const y = point.y - Math.min(100, 80 * point.scale)
+      const y = effect.kind === 'landing' ? point.y : point.y - Math.min(100, 80 * point.scale)
       if (effect.kind === 'electric' && effect.fromX !== undefined && effect.fromZ !== undefined) {
         const from = projector.project(effect.fromX, effect.fromZ)
         let px = from.x
@@ -295,10 +326,10 @@ export class CombatView {
         }
         continue
       }
-      const radius = (effect.kind === 'finish' ? 95 : effect.kind === 'wave' || effect.kind === 'hook' ? 44 :
+      const radius = (effect.kind === 'finish' ? 95 : effect.kind === 'wave' || effect.kind === 'hook' || effect.kind === 'landing' ? 44 :
         effect.kind === 'miss' ? 15 : 27) * (0.4 + progress * 1.1)
       this.effects.lineStyle(effect.kind === 'miss' ? 1 : 2.5, color, effect.kind === 'miss' ? alpha * 0.32 : alpha)
-        .strokeEllipse(point.x, y, radius * 1.30, effect.kind === 'wave' ? radius * 0.44 : radius)
+        .strokeEllipse(point.x, y, radius * 1.30, effect.kind === 'wave' || effect.kind === 'landing' ? radius * 0.36 : radius)
       if (effect.kind === 'miss' || effect.kind === 'fire') continue
       for (let ray = 0; ray < 7; ray++) {
         const angle = ray * 6.283 / 7 + progress * 0.3

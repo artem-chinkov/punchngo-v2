@@ -20,6 +20,25 @@ export interface Balance {
   dashDuration: number
   laneDuration: number
   punchInterval: number
+  minPunchInterval: number
+  holdHurtPause: number
+  specialCooldown: number
+  hookDamage: number
+  hookForce: number
+  hookSplashDamage: number
+  hookSplashDepth: number
+  hookWaveDamage: number
+  hookWaveDepth: number
+  electricDamage: number
+  electricRadius: number
+  uppercutDamage: number
+  uppercutLift: number
+  uppercutForce: number
+  landingDamage: number
+  landingRadius: number
+  sideDamage: number
+  sideForce: number
+  sideImpulse: number
   inputBuffer: number
   damage: number
   reach: number
@@ -51,7 +70,12 @@ export interface Balance {
 
 export const defaultBalance: Balance = {
   hp: 100, speed: 6.4, dashMultiplier: 2, dashLimit: 2.12, dashDuration: 0.5, laneDuration: 0.18,
-  punchInterval: 0.25, inputBuffer: 0.105, damage: 24, reach: 3.2, knockback: 13,
+  punchInterval: 0.25, minPunchInterval: 0.18, holdHurtPause: 0.12,
+  specialCooldown: 0.7, hookDamage: 1.5, hookForce: 1.33, hookSplashDamage: 0.42, hookSplashDepth: 1,
+  hookWaveDamage: 0.61, hookWaveDepth: 2, electricDamage: 0.55, electricRadius: 3.9,
+  uppercutDamage: 1.25, uppercutLift: 5.7, uppercutForce: 0.65, landingDamage: 0.4, landingRadius: 1.9,
+  sideDamage: 0.7, sideForce: 0.82, sideImpulse: 6.2,
+  inputBuffer: 0.105, damage: 24, reach: 3.2, knockback: 13,
   chainDamage: 0.5, chainDepth: 2, chainTargets: 5, immunity: 0.8,
   counterWindow: 0.23, idealWindow: 0.075, idealTapGap: 1.35, counterDamage: 1.75, idealDamage: 2.15,
   counterStun: 1, regularCounterStun: 0.52, counterScore: 50, idealScore: 100,

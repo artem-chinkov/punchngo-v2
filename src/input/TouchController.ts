@@ -1,18 +1,16 @@
-const holdDelay = 180
+export type Swipe = 'up' | 'down' | 'left' | 'right'
+export type InputMode = 'play' | 'counter' | 'off'
+
+const holdDelay = 150
+const tapSlop = 13
 
 export class TouchController {
-  private pointer?: number
-  private x = 0
-  private y = 0
-  private since = 0
-  private wandered = false
-  private swiped = false
-  private held = false
+  private gesture?: { id: number; x: number; y: number; since: number; mode: InputMode;
+    moved: boolean; consumed: boolean; held: boolean; dashed: boolean }
 
-  constructor(private readonly canvas: HTMLCanvasElement,
-    private readonly enabled: () => boolean,
-    private readonly attack: () => void,
-    private readonly lane: (direction: -1 | 1) => void,
+  constructor(private readonly canvas: HTMLCanvasElement, private readonly mode: () => InputMode,
+    private readonly tap: (mode: 'play' | 'counter') => void, private readonly swipe: (direction: Swipe) => void,
+    private readonly now = () => performance.now(),
   ) {
     canvas.addEventListener('pointerdown', this.down)
     canvas.addEventListener('pointermove', this.move)
@@ -24,16 +22,21 @@ export class TouchController {
     document.addEventListener('visibilitychange', this.cancel)
   }
 
-  isHolding(now = performance.now()) {
-    if (this.pointer === undefined || this.wandered || this.swiped || !this.enabled()) return false
-    if (now - this.since >= holdDelay) this.held = true
-    return this.held
+  hold() {
+    const g = this.gesture
+    if (!g || g.consumed || g.mode !== 'play' || this.mode() !== 'play') return undefined
+    if (!g.held && !g.moved && this.now() - g.since >= holdDelay) g.held = true
+    return g.held ? { dash: !g.dashed } : undefined
+  }
+
+  acceptHold() {
+    if (this.gesture?.held) this.gesture.dashed = true
   }
 
   cancel = () => {
-    const pointer = this.pointer
-    this.pointer = undefined
-    if (pointer !== undefined && this.canvas.hasPointerCapture(pointer)) this.canvas.releasePointerCapture(pointer)
+    const g = this.gesture
+    this.gesture = undefined
+    if (g && this.canvas.hasPointerCapture(g.id)) this.canvas.releasePointerCapture(g.id)
   }
 
   destroy() {
@@ -49,37 +52,41 @@ export class TouchController {
   }
 
   private down = (event: PointerEvent) => {
-    if (event.button !== 0 || this.pointer !== undefined || !this.enabled()) return
+    const mode = this.mode()
+    if (event.button !== 0 || event.isPrimary === false || this.gesture || mode === 'off') return
     event.preventDefault()
-    this.pointer = event.pointerId
-    this.x = event.clientX
-    this.y = event.clientY
-    this.since = event.timeStamp
-    this.wandered = this.swiped = this.held = false
+    this.gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, since: this.now(), mode,
+      moved: false, consumed: false, held: false, dashed: false }
     this.canvas.setPointerCapture(event.pointerId)
   }
 
   private move = (event: PointerEvent) => {
-    if (event.pointerId !== this.pointer || this.swiped) return
-    const dx = event.clientX - this.x
-    const dy = event.clientY - this.y
-    if (Math.hypot(dx, dy) > 13) this.wandered = true
-    if (Math.abs(dx) >= 30 && Math.abs(dx) > Math.abs(dy) * 1.3) {
-      this.swiped = true
-      if (this.enabled()) this.lane(dx < 0 ? -1 : 1)
-    }
+    const g = this.gesture
+    if (!g || event.pointerId !== g.id || g.consumed) return
+    const dx = event.clientX - g.x
+    const dy = event.clientY - g.y
+    const x = Math.abs(dx)
+    const y = Math.abs(dy)
+    if (Math.hypot(dx, dy) > tapSlop) g.moved = true
+    const threshold = Math.max(25, Math.min(35, 28 * this.canvas.clientWidth / 375))
+    const direction = x >= threshold && x >= y * 1.25 ? (dx < 0 ? 'left' : 'right') :
+      y >= threshold && y >= x * 1.25 ? (dy < 0 ? 'up' : 'down') : undefined
+    if (!direction) return
+    g.consumed = true
+    if (g.mode === 'play' && this.mode() === 'play') this.swipe(direction)
   }
 
   private up = (event: PointerEvent) => {
-    if (event.pointerId !== this.pointer) return
+    const g = this.gesture
+    if (!g || event.pointerId !== g.id) return
     this.move(event)
-    const tap = !this.held && !this.wandered && !this.swiped && event.timeStamp - this.since <= 320
+    const tap = !g.held && !g.moved && !g.consumed && this.now() - g.since < holdDelay
     this.cancel()
-    if (tap && this.enabled()) this.attack()
+    if (tap && this.mode() === g.mode && g.mode !== 'off') this.tap(g.mode)
   }
 
   private cancelPointer = (event: PointerEvent) => {
-    if (event.pointerId === this.pointer) this.cancel()
+    if (event.pointerId === this.gesture?.id) this.cancel()
   }
 
   private preventMenu = (event: MouseEvent) => event.preventDefault()
