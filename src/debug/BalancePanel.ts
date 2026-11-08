@@ -1,3 +1,4 @@
+import { hintKinds, type HintKind } from '../game/Onboarding'
 import { enemyPoses, enemyTypes, handPoses, type AnimationState, type EnemyType } from '../assets/ids'
 import { defaultBalance, type Balance, type EnemyBalance } from '../combat/balance'
 import type { ParkRun } from '../game/ParkRun'
@@ -9,6 +10,8 @@ type Field<T> = [key: keyof T, label: string, min: number, max: number]
 type Main = Omit<Balance, 'enemies'>
 const movement: Field<Main>[] = [
   ['hp', 'Здоровье героя', 1, 999], ['speed', 'Скорость бега', 2, 20],
+  ['holdSlowdownPerSecond', 'Замедление при удержании, п. п./с', 0, 50],
+  ['holdMinSpeedPercent', 'Минимальная скорость при удержании, %', 0, 100],
   ['dashMultiplier', 'Пик рывка', 1, 3], ['dashLimit', 'Предел скорости', 1, 3],
   ['dashDuration', 'Длительность рывка, с', 0.05, 2], ['laneDuration', 'Смена полосы, с', 0.06, 1],
   ['immunity', 'Неуязвимость после урона, с', 0.1, 3],
@@ -27,13 +30,25 @@ const combat: Field<Main>[] = [
 const gestures: Field<Main>[] = [
   ['minPunchInterval', 'Минимальный интервал ударов, с', 0.06, 0.5],
   ['holdHurtPause', 'Пауза серии после урона, с', 0, 0.5],
-  ['specialCooldown', 'Интервал хука и апперкота, с', 0.1, 3],
-  ['hookDamage', 'Урон хука, ×', 0.1, 4], ['hookForce', 'Импульс хука, ×', 0.1, 4],
-  ['hookSplashDamage', 'Урон дуги хука, ×', 0.05, 2], ['hookSplashDepth', 'Глубина дуги', 0.1, 6],
-  ['hookWaveDamage', 'Урон волны хука, ×', 0.05, 2], ['hookWaveDepth', 'Глубина волны хука', 0.1, 6],
+  ['specialCooldown', 'Интервал после апперкота, с', 0.1, 3],
+  ['superSpeed', 'Пик скорости супер-рывка, ×', 1, 5],
+  ['superDuration', 'Длительность супер-рывка, с', 0.15, 4],
+  ['superPrepare', 'Подготовка супер-рывка, с', 0.01, 1.5],
+  ['superFade', 'Затухание супер-рывка, с', 0.01, 2],
+  ['superRecovery', 'Восстановление после супер-рывка, с', 0, 3],
+  ['superDamage', 'Урон контакта супер-рывка, ×', 0.05, 2],
+  ['superPush', 'Боковой импульс супер-рывка', 1, 24],
+  ['superTargets', 'Максимум целей супер-рывка', 1, 5],
   ['electricDamage', 'Урон разряда, ×', 0.05, 2], ['electricRadius', 'Радиус разряда', 0.1, 8],
-  ['uppercutDamage', 'Урон апперкота, ×', 0.1, 4], ['uppercutForce', 'Импульс апперкота, ×', 0.1, 4],
-  ['uppercutLift', 'Скорость подъёма врага', 1, 10],
+  ['uppercutDamage', 'Урон апперкота, ×', 0.1, 4], ['uppercutForce', 'Импульс вперёд апперкота, ×', 0.1, 4],
+  ['uppercutLift', 'Скорость подъёма врага', 1, 12],
+  ['uppercutAnimation', 'Длительность анимации апперкота, с', 0.12, 1.5],
+  ['uppercutWindup', 'Замах апперкота, с', 0.01, 0.5],
+  ['uppercutDrive', 'Выброс кулака апперкота, с', 0.01, 0.5],
+  ['uppercutFlight', 'Длительность импульса апперкота, с', 0.1, 2],
+  ['uppercutTransfer', 'Передача импульса при рикошете, ×', 0.1, 1.8],
+  ['uppercutMaxSpeed', 'Предел скорости цели апперкота', 5, 70],
+  ['uppercutChainDepth', 'Глубина цепи апперкота', 0, 3],
   ['landingDamage', 'Урон волны приземления, ×', 0.05, 2], ['landingRadius', 'Радиус волны приземления', 0.1, 6],
   ['sideDamage', 'Урон бокового удара, ×', 0.1, 3], ['sideForce', 'Импульс вперёд бокового удара, ×', 0.1, 3],
   ['sideImpulse', 'Боковой импульс врага', 1, 15],
@@ -61,6 +76,7 @@ export class BalancePanel {
   invulnerable = false
   zones = false
   preview?: AnimationPreview
+  contextHints = true
   private readonly shell = document.createElement('div')
   private readonly panel: HTMLElement
   private readonly cameraPanel: HTMLElement
@@ -77,7 +93,7 @@ export class BalancePanel {
 
   get paused() { return this.open || this.cameraOpen || !!this.preview }
 
-  constructor(root: HTMLElement, private readonly changed: () => void, restart: (atBoss: boolean) => void, resetTutorial: () => void) {
+  constructor(root: HTMLElement, private readonly changed: () => void, restart: (atBoss: boolean) => void, resetTutorial: () => void, forceHint: (kind: HintKind) => void) {
     this.shell.innerHTML = `
       <button class="dev-toggle" type="button" aria-expanded="false">DEV</button>
       <section class="dev-panel" aria-label="Панель разработчика" hidden>
@@ -106,6 +122,11 @@ export class BalancePanel {
           <div class="dev-actions"><select data-upgrade aria-label="Улучшение"></select>
             <button type="button" data-action="upgrade">Выдать</button></div>
         </details>
+        <details><summary>Обучение</summary>
+          <label><input data-context-hints type="checkbox" checked> Контекстные подсказки</label>
+          <div class="dev-actions"><select data-tutorial-hint aria-label="Подсказка"></select>
+            <button type="button" data-action="hint">Показать подсказку</button></div>
+        </details>
         <details><summary>Анимации</summary>
           <div class="dev-actions"><select data-actor aria-label="Персонаж"></select>
             <select data-pose aria-label="Состояние анимации"></select>
@@ -133,6 +154,12 @@ export class BalancePanel {
     const invulnerable = find<HTMLInputElement>('[data-invincible]')
     const zones = find<HTMLInputElement>('[data-zones]')
     const speed = find<HTMLInputElement>('[data-speed]')
+    const contextHints = find<HTMLInputElement>('[data-context-hints]')
+    contextHints.onchange = () => { this.contextHints = contextHints.checked }
+    const hint = find<HTMLSelectElement>('[data-tutorial-hint]')
+    const hintLabels: Record<HintKind, string> = { punch: 'Тап / удержание', side: 'Боковой удар',
+      superDash: 'Супер-рывок', uppercut: 'Апперкот' }
+    for (const kind of hintKinds) hint.add(new Option(hintLabels[kind], kind))
     const upgrade = find<HTMLSelectElement>('[data-upgrade]')
     for (const id of upgradeIds) upgrade.add(new Option(upgrades[id].name, id))
     const actor = find<HTMLSelectElement>('[data-actor]')
@@ -198,6 +225,10 @@ export class BalancePanel {
         this.changed()
         cameraHeight.focus()
       }
+      if (action === 'hint') {
+        this.toggle(false)
+        forceHint(hint.value as HintKind)
+      }
       if (action === 'tutorial') {
         this.toggle(false)
         resetTutorial()
@@ -261,6 +292,7 @@ export class BalancePanel {
     this.section('Герой и движение', this.balance, movement)
     this.section('Удары, цепочки и контратаки', this.balance, combat)
     this.section('Спецприёмы и удержание', this.balance, gestures)
+    this.section('Интервалы обучения', this.balance, [['counterTutorialLock', 'Защита учебной контратаки, с', 0, 8]])
     this.section('Спавн, время и ранги', this.balance, director)
     for (const type of enemyTypes) this.section(names[type], this.balance.enemies[type], enemy)
   }
@@ -285,7 +317,7 @@ export class BalancePanel {
       input.value = String(values[key])
       input.addEventListener('invalid', () => { group.open = true })
       this.options.push(() => {
-        const value = key === 'chainDepth' || key === 'chainTargets' ? Math.round(input.valueAsNumber) : input.valueAsNumber
+        const value = key === 'chainDepth' || key === 'chainTargets' || key === 'superTargets' || key === 'uppercutChainDepth' ? Math.round(input.valueAsNumber) : input.valueAsNumber
         values[key] = value as T[typeof key]
       })
       row.append(text, input)

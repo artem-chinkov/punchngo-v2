@@ -16,17 +16,18 @@ const loop = 'music-loop'
 const fadeSeconds = 0.42
 const maxVoices = 8
 
-const hitFamily = new Set<SfxCue>(['punch.hit', 'punch.heavy_hit', 'punch.hook'])
+const hitFamily = new Set<SfxCue>(['punch.hit', 'punch.heavy_hit', 'dash.impact', 'uppercut.impact'])
 function priority(cue: SfxCue) {
   if (cue.startsWith('game.')) return 4
   if (cue === 'boss.windup' || cue.startsWith('counter.')) return 3
-  if (cue.startsWith('ui.') || cue === 'player.hurt' || cue === 'boss.attack') return 2
+  if (cue === 'dash.start' || cue === 'uppercut.ricochet' || cue.startsWith('ui.') || cue === 'player.hurt' || cue === 'boss.attack') return 2
   return hitFamily.has(cue) || cue.startsWith('upgrade.') ? 1 : 0
 }
 
 export class GameAudio {
   settings = readAudioSettings()
   private current?: Track
+  private dashWind?: Sound
   private outgoing?: Track
   private fadeAge = 0
   private boundary?: { at: number; last: number }
@@ -68,6 +69,7 @@ export class GameAudio {
   setSettings(settings: AudioSettings) {
     this.settings = saveAudioSettings(settings)
     this.mixMusic()
+    if (this.effectGain(1) === 0) this.stopDashWind()
     for (const voice of this.voices) {
       voice.sound.setVolume(this.effectGain(voice.gain))
     }
@@ -77,6 +79,7 @@ export class GameAudio {
     if (active === this.foreground) return
     this.foreground = active
     if (!active) {
+      this.stopDashWind()
       this.clearVoices()
       this.current?.sound.pause()
       this.outgoing?.sound.pause()
@@ -88,6 +91,7 @@ export class GameAudio {
   }
 
   resetRun() {
+    this.stopDashWind()
     this.stopMusic()
     this.clearVoices()
     this.lastCue.clear()
@@ -102,7 +106,7 @@ export class GameAudio {
     if (!item) return
     const group = hitFamily.has(cue) ? 'impact' : cue.startsWith('counter.') ? 'counter' : cue
     const now = performance.now()
-    const separation = group === 'impact' ? 45 : group === 'enemy.collision' || group === 'enemy.fall' ? 85 : 55
+    const separation = group === 'impact' ? 45 : group === 'enemy.collision' || group === 'uppercut.ricochet' || group === 'enemy.fall' ? 85 : 55
     if (now - (this.lastCue.get(group) ?? -Infinity) < separation) return
 
     const index = ((this.variants.get(cue) ?? -1) + 1) % item.files.length
@@ -136,6 +140,28 @@ export class GameAudio {
     }
     this.variants.set(cue, index)
     this.lastCue.set(group, now)
+  }
+
+  updateDashWind(boost: number) {
+    const gain = this.effectGain((effects.get('dash.wind')?.volume ?? 0) * Math.min(1, boost))
+    if (gain <= 0.01 || !this.started || !this.foreground || !this.canPlay()) {
+      this.stopDashWind()
+      return
+    }
+    if (this.dashWind) {
+      this.dashWind.setVolume(gain)
+      return
+    }
+    const key = prefix + 'dash.wind.0'
+    if (!this.scene.cache.audio.exists(key)) return
+    const sound = this.scene.sound.add(key) as Sound
+    if (sound.play({ loop: true, volume: gain })) this.dashWind = sound
+    else sound.destroy()
+  }
+
+  private stopDashWind() {
+    this.dashWind?.destroy()
+    this.dashWind = undefined
   }
 
   update(phase: Phase, bossPhase: 1 | 2 | undefined, seconds: number, tutorialPaused = false) {

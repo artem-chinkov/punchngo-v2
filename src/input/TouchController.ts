@@ -5,12 +5,14 @@ const holdDelay = 150
 const tapSlop = 13
 
 export class TouchController {
+  private readonly contacts = new Set<number>()
   private gesture?: { id: number; x: number; y: number; since: number; mode: InputMode;
     moved: boolean; consumed: boolean; held: boolean; dashed: boolean }
 
   constructor(private readonly canvas: HTMLCanvasElement, private readonly mode: () => InputMode,
     private readonly tap: (mode: 'play' | 'counter') => void, private readonly swipe: (direction: Swipe) => void,
     private readonly now = () => performance.now(),
+    private readonly scope: HTMLElement = canvas,
   ) {
     canvas.addEventListener('pointerdown', this.down)
     canvas.addEventListener('pointermove', this.move)
@@ -18,9 +20,14 @@ export class TouchController {
     canvas.addEventListener('pointercancel', this.cancelPointer)
     canvas.addEventListener('lostpointercapture', this.cancelPointer)
     canvas.addEventListener('contextmenu', this.preventMenu)
-    window.addEventListener('blur', this.cancel)
-    document.addEventListener('visibilitychange', this.cancel)
+    window.addEventListener('pointerdown', this.trackDown, true)
+    window.addEventListener('pointerup', this.trackEnd, true)
+    window.addEventListener('pointercancel', this.trackEnd, true)
+    window.addEventListener('blur', this.interrupt)
+    document.addEventListener('visibilitychange', this.interrupt)
   }
+
+  get hasContacts() { return this.contacts.size > 0 }
 
   hold() {
     const g = this.gesture
@@ -47,13 +54,32 @@ export class TouchController {
     this.canvas.removeEventListener('pointercancel', this.cancelPointer)
     this.canvas.removeEventListener('lostpointercapture', this.cancelPointer)
     this.canvas.removeEventListener('contextmenu', this.preventMenu)
-    window.removeEventListener('blur', this.cancel)
-    document.removeEventListener('visibilitychange', this.cancel)
+    window.removeEventListener('pointerdown', this.trackDown, true)
+    window.removeEventListener('pointerup', this.trackEnd, true)
+    window.removeEventListener('pointercancel', this.trackEnd, true)
+    window.removeEventListener('blur', this.interrupt)
+    document.removeEventListener('visibilitychange', this.interrupt)
+    this.contacts.clear()
   }
 
+  private interrupt = () => {
+    this.cancel()
+    this.contacts.clear()
+  }
+
+  private trackDown = (event: PointerEvent) => {
+    if (event.button === 0 && event.target instanceof Node && this.scope.contains(event.target)) {
+      this.contacts.add(event.pointerId)
+    }
+  }
+
+  private trackEnd = (event: PointerEvent) => { this.contacts.delete(event.pointerId) }
+
   private down = (event: PointerEvent) => {
+    if (event.button === 0) this.contacts.add(event.pointerId)
     const mode = this.mode()
-    if (event.button !== 0 || event.isPrimary === false || this.gesture || mode === 'off') return
+    if (event.button !== 0 || event.isPrimary === false || this.gesture || mode === 'off' ||
+      (mode === 'counter' && this.contacts.size > 1)) return
     event.preventDefault()
     this.gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, since: this.now(), mode,
       moved: false, consumed: false, held: false, dashed: false }
@@ -77,15 +103,17 @@ export class TouchController {
   }
 
   private up = (event: PointerEvent) => {
+    this.trackEnd(event)
     const g = this.gesture
     if (!g || event.pointerId !== g.id) return
     this.move(event)
-    const tap = !g.held && !g.moved && !g.consumed && this.now() - g.since < holdDelay
+    const tap = (g.mode !== 'counter' || !this.hasContacts) && !g.held && !g.moved && !g.consumed && this.now() - g.since < holdDelay
     this.cancel()
     if (tap && this.mode() === g.mode && g.mode !== 'off') this.tap(g.mode)
   }
 
   private cancelPointer = (event: PointerEvent) => {
+    if (event.type === 'pointercancel') this.trackEnd(event)
     if (event.pointerId === this.gesture?.id) this.cancel()
   }
 

@@ -192,7 +192,7 @@ progress::-moz-progress-bar { background: #edba68; }
 .tutorial-layer { position: absolute; z-index: 5; inset: 0; pointer-events: none; }
 .tutorial-shade { position: absolute; inset: 0; background: #101a127e; }
 .tutorial-layer[data-stage="countdown"] :is(.tutorial-shade, .controls-tutorial) { animation: tutorial-shade-out .18s both; }
-.tutorial-layer[data-stage="success"] .tutorial-shade { display: none; }
+.tutorial-layer:is([data-stage="success"], [data-stage="none"]) .tutorial-shade { display: none; }
 .controls-tutorial {
   position: absolute; inset: 75px 7px 74px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
   justify-items: center; gap: 6px;
@@ -217,7 +217,7 @@ progress::-moz-progress-bar { background: #edba68; }
 .gesture-guide--up, .gesture-guide--down { grid-template-columns: 1fr auto 1fr; }
 .gesture-guide--up .gesture-arrow, .gesture-guide--down .gesture-arrow { grid-column: 2; }
 .gesture-guide--up .gesture-copy, .gesture-guide--down .gesture-copy { justify-self: start; }
-.gesture-arrow { display: grid; place-items: center; filter: drop-shadow(0 0 5px #ffa83e); animation: gesture-nudge 1.45s ease-in-out infinite; }
+.gesture-arrow { display: grid; place-items: center; filter: drop-shadow(0 0 3px #ffa83e75); opacity: .66; }
 .gesture-arrow svg {
   width: clamp(25px, 7.6vw, 43px); height: auto; transform: rotate(var(--arrow-angle, 0deg));
   fill: #ffac34; stroke: #ffea9f; stroke-width: 1.6; stroke-linejoin: round;
@@ -229,25 +229,32 @@ progress::-moz-progress-bar { background: #edba68; }
 .gesture-copy h3, .gesture-center h3 {
   color: #ffd46e; margin: 0; font: 900 clamp(10px, 2.9vw, 13px)/1.05 system-ui, sans-serif;
 }
-.gesture-copy p, .gesture-center p {
-  margin: 3px 0 0; color: #fff0d2; font: 500 clamp(10px, 2.8vw, 13px)/1.15 system-ui, sans-serif;
-}
-.gesture-compact { display: none; }
 .gesture-center {
   grid-area: tap; align-self: center; width: 100%; min-height: 112px; aspect-ratio: 1;
   display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 5px 6px;
   text-align: center; background: #15231eea; border: 2px solid #ffd469; border-radius: 50%;
-  box-shadow: 0 0 11px #f4a745c4, inset 0 0 12px #efbc6860; animation: circle-glow 2.8s ease-in-out infinite;
+  box-shadow: 0 0 8px #f4a74580, inset 0 0 10px #efbc6850;
 }
 .gesture-center svg, .counter-lesson svg {
   flex: none; width: clamp(23px, 8vw, 38px); height: auto; fill: #fff0c9; stroke: #0f1a15; stroke-width: 1.5;
 }
 .gesture-center .touch-ring, .counter-lesson .touch-ring {
   fill: none; stroke: #ffce65; stroke-width: 2; transform-origin: 20px 13px;
-  animation: tutorial-tap 2.8s ease-out infinite;
+
 }
-.gesture-center p { max-width: 91%; }
-.gesture-center hr { border: 0; height: 1px; background: #ccaa5a; width: 73%; margin: 4px 0; }
+.gesture-center h3 { max-width: 9ch; margin-top: 7px; }
+.tutorial-layer[data-demo="punch"] .gesture-center { animation: circle-glow 1s ease-in-out infinite; }
+.tutorial-layer[data-demo="punch"] .gesture-center .touch-ring { animation: tutorial-tap 1.85s ease-out infinite; }
+.tutorial-layer[data-demo="side"] :is(.gesture-guide--left,.gesture-guide--right) .gesture-arrow,
+.tutorial-layer[data-demo="superDash"] .gesture-guide--up .gesture-arrow,
+.tutorial-layer[data-demo="uppercut"] .gesture-guide--down .gesture-arrow {
+  opacity: 1; filter: drop-shadow(0 0 8px #ffa83e); animation: gesture-nudge .9s ease-in-out infinite;
+}
+.tutorial-layer[data-demo="side"] :is(.gesture-guide--left,.gesture-guide--right) .gesture-copy,
+.tutorial-layer[data-demo="superDash"] .gesture-guide--up .gesture-copy,
+.tutorial-layer[data-demo="uppercut"] .gesture-guide--down .gesture-copy {
+  border-color: #fff3ad; background: #344828; box-shadow: 0 0 10px #ffc4647a;
+}
 .tutorial-start {
   width: min(100%, 285px); min-height: 44px; padding: 6px 10px; border: 3px solid #ffe087;
   border-radius: 11px; background: linear-gradient(#4f8f35, #24652d 55%, #164427);
@@ -262,7 +269,7 @@ progress::-moz-progress-bar { background: #edba68; }
 .tutorial-success {
   top: 27%; font-size: clamp(24px, 8vw, 45px); color: #ffde71; animation: tutorial-success .72s both;
 }
-.tutorial-layer[data-stage="counter"] .tutorial-shade {
+.tutorial-layer:is([data-stage="counterLocked"],[data-stage="counterReady"]) .tutorial-shade {
   background: radial-gradient(ellipse var(--target-rx, 20%) var(--target-ry, 23%) at var(--target-x, 52%) var(--target-y, 55%),
     transparent 70%, #111b15a9 145%);
 }
@@ -274,31 +281,47 @@ progress::-moz-progress-bar { background: #edba68; }
   left: 8px; right: 8px; width: auto; max-width: 365px; margin-inline: auto; top: 76px;
 }
 .tutorial-layer[data-layout="bottom"] .counter-tutorial { top: auto; bottom: 69px; }
-.tutorial-layer:is([data-layout="top"], [data-layout="bottom"]) .counter-lesson {
-  grid-template-columns: minmax(0, 1fr) minmax(0, .65fr) auto;
-}
-.tutorial-layer:is([data-layout="top"], [data-layout="bottom"]) .counter-lesson div:nth-child(2) { grid-column: 2 / 4; }
-.tutorial-layer:is([data-layout="top"], [data-layout="bottom"]) .counter-lesson div:nth-child(3) { grid-column: 1 / 3; }
 .counter-tutorial .tutorial-heading { font-size: clamp(15px, 4.8vw, 22px); margin-bottom: 5px; }
 .counter-lesson {
   background: #14241ff5; border: 2px solid #f8c861; border-radius: 9px; padding: 6px;
-  display: grid; gap: 5px; box-shadow: 2px 3px #101a13b5;
+  display: grid; gap: 8px; box-shadow: 2px 3px #101a13b5;
 }
-.counter-lesson div { display: flex; align-items: flex-start; gap: 5px; }
-.counter-lesson p { margin: 0; color: #fff2d8; font: 500 clamp(10px, 2.9vw, 13px)/1.18 system-ui, sans-serif; }
-.counter-lesson b { display: block; color: #ffd66f; font-weight: 900; }
-.counter-lesson div:first-child b { color: #ff937a; }
-.counter-lesson div > span {
-  flex: 0 0 20px; height: 20px; display: grid; place-items: center;
-  border: 1px solid #ffc365; border-radius: 50%; font-size: 15px; font-weight: 950;
+.counter-signs, .counter-tap {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center; color: #fff2d8;
+  font: 900 clamp(10px, 2.65vw, 13px)/1.15 system-ui, sans-serif;
 }
-.lesson-red { background: #af3029; color: #fff1c7; }
+.counter-signs b { border-radius: 4px; padding: 4px 5px; }
+.lesson-red { background: #a82f27; color: #fff1c7; }
 .lesson-yellow { background: #ffca47; color: #332217; }
-.counter-lesson svg { width: 20px; }
+.counter-tap { color: #ffe18a; }
+.counter-ring {
+  flex: 0 0 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(#ffce65 calc(var(--counter-progress, 0) * 100%), #525340 0);
+  position: relative;
+}
+.counter-ring::before { content: ""; position: absolute; inset: 2px; background: #14241f; border-radius: 50%; }
+.counter-ring svg { position: relative; width: 25px; }
+.tutorial-layer[data-stage="counterLocked"] .counter-tap b { opacity: .53; }
+.tutorial-layer[data-stage="counterReady"] .counter-ring .touch-ring { animation: tutorial-tap 1.5s ease-out infinite; }
 .counter-lesson button {
-  justify-self: start; min-height: 34px; padding: 4px 7px; background: #263a30; border: 1px solid #7e8967;
+  justify-self: start; min-height: 36px; padding: 4px 8px; background: #263a30; border: 1px solid #7e8967;
   color: #fff0cb; font-size: 11px; pointer-events: auto; touch-action: manipulation;
 }
+.counter-lesson button:disabled { opacity: .5; pointer-events: none; }
+.context-hint {
+  position: absolute; left: 50%; bottom: 79px; translate: -50% 0;
+  display: flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap;
+  border: 1px solid #f3c26b; border-radius: 7px; background: #15251ff2; color: #ffe294;
+  box-shadow: 0 3px #141a13b5; padding: 6px 10px; font-size: clamp(11px, 3.4vw, 15px);
+  animation: hint-in .2s ease-out;
+}
+@keyframes hint-in { from { opacity: .65; } to { opacity: 1; } }
+.context-hint svg { width: 25px; height: 25px; fill: #fff0c9; }
+.hint-punches { display: flex; align-items: center; gap: 1px; }
+.hint-punches svg { width: 15px; height: 15px; animation: hint-punch .75s ease-in-out infinite; }
+.hint-punches svg + svg { animation-delay: .375s; }
+@keyframes hint-punch { 30% { translate: 0 -4px; scale: 1.12; } }
+.context-hint .touch-ring { fill: none; stroke: #ffce65; animation: tutorial-tap 1.25s ease-out infinite; }
 @keyframes tutorial-rise { from { opacity: .78; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
 @keyframes tutorial-shade-out { to { opacity: 0; } }
 @keyframes gesture-nudge { 50% { translate: var(--arrow-x, 0px) var(--arrow-y, -4px); } }
@@ -309,10 +332,6 @@ progress::-moz-progress-bar { background: #edba68; }
   22% { opacity: 0; scale: 1.27; }
 }
 @keyframes tutorial-success { 0% { opacity: 0; scale: .85; } 17%, 70% { opacity: 1; scale: 1; } 100% { opacity: 0; } }
-@media (max-width: 360px), (max-height: 650px) {
-  :is(.gesture-copy, .gesture-center) p:not(.gesture-compact) { display: none; }
-  :is(.gesture-copy, .gesture-center) .gesture-compact { display: block; }
-}
 @media (max-height: 510px) {
   .controls-tutorial { inset: 72px 4px 69px; gap: 4px; }
   .gesture-grid { gap: 3px; }
@@ -323,7 +342,8 @@ progress::-moz-progress-bar { background: #edba68; }
   .gesture-copy { padding: 3px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .gesture-arrow, .gesture-copy, .gesture-center, .touch-ring, .counter-tutorial,
+  .tutorial-layer .gesture-arrow, .tutorial-layer .gesture-center, .tutorial-layer .touch-ring,
+  .counter-tutorial, .context-hint, .hint-punches svg,
   .tutorial-layer[data-stage="countdown"] :is(.tutorial-shade, .controls-tutorial), .tutorial-success { animation: none; }
   .tutorial-layer[data-stage="countdown"] .controls-tutorial { visibility: hidden; }
   .tutorial-layer[data-stage="countdown"] .tutorial-shade { background: transparent; }

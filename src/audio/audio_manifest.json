@@ -60,11 +60,11 @@
       "volume": 0.58
     },
     {
-      "key": "punch.hook",
+      "key": "dash.impact",
       "files": [
         "sfx/hook_impact.wav"
       ],
-      "volume": 0.62
+      "volume": 0.6
     },
     {
       "key": "counter.success",
@@ -130,11 +130,11 @@
       "volume": 0.55
     },
     {
-      "key": "upgrade.uppercut",
+      "key": "uppercut.windup",
       "files": [
         "sfx/uppercut.wav"
       ],
-      "volume": 0.62
+      "volume": 0.53
     },
     {
       "key": "upgrade.shockwave",
@@ -191,6 +191,35 @@
         "sfx/defeat.wav"
       ],
       "volume": 0.55
+    },
+    {
+      "key": "dash.start",
+      "files": [
+        "sfx/punch_whoosh_01.wav"
+      ],
+      "volume": 0.73
+    },
+    {
+      "key": "dash.wind",
+      "files": [
+        "sfx/super_dash_wind.wav"
+      ],
+      "volume": 0.26
+    },
+    {
+      "key": "uppercut.impact",
+      "files": [
+        "sfx/hit_heavy_01.wav",
+        "sfx/hit_heavy_02.wav"
+      ],
+      "volume": 0.78
+    },
+    {
+      "key": "uppercut.ricochet",
+      "files": [
+        "sfx/enemy_collision.wav"
+      ],
+      "volume": 0.73
     }
   ],
   "integration": {

@@ -51,8 +51,8 @@ export class EncounterDirector {
     this.last = pattern.name
     this.cycle++
     const mirror = this.random.next() < 0.5 ? -1 : 1
-    const base = Math.max(runner.z + Math.max(14, runner.speed * 2.35 + 3.6), Math.min(front + 2.5, runner.z + 28))
-    const spacing = 1 + Math.max(0, runner.speed / this.balance.speed - 1) * 0.22
+    const base = Math.max(runner.z + Math.max(14, runner.spawnSpeed * 2.35 + 3.6), Math.min(front + 2.5, runner.z + 28))
+    const spacing = 1 + Math.max(0, runner.spawnSpeed / this.balance.speed - 1) * 0.22
     for (const [position, offset, preset] of pattern.slots) {
       let lane = (position * mirror) as Lane
       if (pattern.name === 'solo' && this.cycle % 3 === 1) lane = runner.lane

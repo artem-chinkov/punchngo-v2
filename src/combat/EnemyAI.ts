@@ -5,6 +5,8 @@ import type { Balance } from './balance'
 
 export interface Chain {
   visited: Set<number>
+  kind?: 'uppercut' | 'superDash' | 'body'
+  limit?: number
 }
 
 export interface Enemy {
@@ -16,6 +18,7 @@ export interface Enemy {
   z: number
   previousX: number
   previousZ: number
+  previousY: number
   y: number
   vy: number
   vx: number
@@ -27,6 +30,7 @@ export interface Enemy {
   until: number
   nextLane: number
   contactUntil: number
+  contactSide: -1 | 0 | 1
   flightUntil: number
   chain?: Chain
   landingWave?: Chain
@@ -40,9 +44,9 @@ export interface Enemy {
 
 export function createEnemy(id: number, type: EnemyType, lane: Lane, z: number, hp: number, now: number): Enemy {
   const x = laneX(lane)
-  return { id, type, lane, destination: lane, x, z, previousX: x, previousZ: z, y: 0, vy: 0, vx: 0, vz: 0,
+  return { id, type, lane, destination: lane, x, z, previousX: x, previousZ: z, previousY: 0, y: 0, vy: 0, vx: 0, vz: 0,
     hp, maxHp: hp, pose: 'approach', since: now, until: now, nextLane: now + 0.55 + (id % 3) * 0.24,
-    contactUntil: 0, flightUntil: 0, depth: 0, removeAt: Infinity,
+    contactUntil: 0, contactSide: 0, flightUntil: 0, depth: 0, removeAt: Infinity,
     burnTicks: 0, burnAt: Infinity, burnDamage: 0, bossPhase: 1 }
 }
 
@@ -60,19 +64,30 @@ function toward(from: number, to: number, distance: number) {
   return from + Math.sign(to - from) * Math.min(Math.abs(to - from), distance)
 }
 
+export const flightEdge = 2.55
+
+export function moveFlightPlanar(enemy: Enemy, dt: number, forward = 0) {
+  enemy.z += enemy.vz * dt + forward
+  enemy.x = Math.max(-flightEdge, Math.min(flightEdge, enemy.x + enemy.vx * dt))
+  const drag = Math.exp(-1.45 * dt)
+  enemy.vx *= drag
+  enemy.vz *= drag
+}
+
 export class EnemyAI {
   private nextAttack = 0
 
   constructor(private readonly balance: Balance) {}
 
   update(enemies: Enemy[], runner: Runner, now: number, dt: number,
-    strike: (enemy: Enemy) => void, contact: (enemy: Enemy) => void, land: (enemy: Enemy) => void) {
+    strike: (enemy: Enemy) => void, land: (enemy: Enemy) => void) {
     let bossThreat = false
     let active = false
     let candidate: Enemy | undefined
     for (const enemy of enemies) {
       enemy.previousX = enemy.x
       enemy.previousZ = enemy.z
+      enemy.previousY = enemy.y
       if (this.advanceFlight(enemy, runner, now, dt, land) || enemy.hp <= 0) continue
       if (enemy.type === 'bulldog') {
         this.boss(enemy, runner, now, dt, strike)
@@ -82,11 +97,7 @@ export class EnemyAI {
       this.regular(enemy, runner, now, dt, strike)
       const distance = enemy.z - runner.z
       const offset = Math.abs(enemy.x - runner.x)
-      if (distance <= 0.55 && enemy.previousZ - runner.previousZ > -0.52 && offset < 0.66 && now >= enemy.contactUntil) {
-        contact(enemy)
-        continue
-      }
-      if (enemy.pose === 'telegraph' || enemy.pose === 'attack') active = true
+      if ((distance > 0.55 || offset >= 0.66) && (enemy.pose === 'telegraph' || enemy.pose === 'attack')) active = true
       if (distance >= 0.75 && distance <= 5.65 && offset < 0.75 &&
         (enemy.pose === 'approach' || enemy.pose === 'idle') && (!candidate || enemy.z < candidate.z)) candidate = enemy
     }
@@ -109,12 +120,7 @@ export class EnemyAI {
 
     const wasAirborne = enemy.y > 0
     const bossMotion = enemy.type === 'bulldog' && enemy.hp > 0 ? runner.z - runner.previousZ : 0
-    enemy.z += enemy.vz * dt + bossMotion
-    const edge = 2.55
-    enemy.x = Math.max(-edge, Math.min(edge, enemy.x + enemy.vx * dt))
-    const drag = Math.exp(-1.45 * dt)
-    enemy.vx *= drag
-    enemy.vz *= drag
+    moveFlightPlanar(enemy, dt, bossMotion)
     enemy.y = Math.max(0, enemy.y + enemy.vy * dt)
     enemy.vy = enemy.y > 0 ? enemy.vy - 21 * dt : 0
     if (wasAirborne && enemy.y === 0) {

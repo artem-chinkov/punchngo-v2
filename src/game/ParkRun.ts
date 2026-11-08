@@ -1,4 +1,4 @@
-import { CombatSystem } from '../combat/CombatSystem'
+import { CombatSystem, type Special } from '../combat/CombatSystem'
 import { setPose, type Enemy } from '../combat/EnemyAI'
 import type { Balance } from '../combat/balance'
 import type { WorldSettings } from '../world/route'
@@ -52,7 +52,7 @@ export class ParkRun {
   swipe(direction: -1 | 1) {
     return this.active && !this.tutorialTarget && this.combat.sideStrike(this.runner, this.now, direction)
   }
-  special(kind: 'hook' | 'uppercut') {
+  special(kind: Special) {
     return this.active && !this.tutorialTarget && this.combat.special(this.runner, this.now, kind)
   }
   confirmTutorialCounter(skip = false) {
@@ -61,7 +61,10 @@ export class ParkRun {
     this.tutorialTarget = undefined
     return true
   }
-  clearInput() { this.combat.clearInput() }
+  clearInput() {
+    this.combat.clearInput()
+    this.runner.clearHold()
+  }
 
   choose(id: UpgradeId) {
     if (this.phase !== 'upgrade' || !this.offer.includes(id) || !this.combat.take(id)) return false
@@ -87,7 +90,7 @@ export class ParkRun {
     }
     if (!this.active) return false
     this.now += dt
-    this.runner.advance(dt)
+    this.runner.advance(dt, !!hold)
     if (this.phase === 'park' && this.now >= this.balance.bossAt) this.beginBoss()
     if (this.phase === 'park') {
       this.director.update(this.now, this.runner, this.combat.enemies,
@@ -113,9 +116,11 @@ export class ParkRun {
   private settlePhase() {
     if (this.combat.hp <= 0) {
       this.phase = 'defeat'
+      this.runner.stopSuper()
       this.clearInput()
     } else if (this.combat.boss && this.combat.boss.hp <= 0) {
       this.phase = 'finisher'
+      this.runner.stopSuper()
       this.clearInput()
       this.combat.finish(this.runner, this.now)
     } else if (this.phase === 'park') this.checkLevel()

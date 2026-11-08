@@ -66,7 +66,7 @@ export class HUD {
           <div class="signal" data-signal></div>
           <div class="hud-strip"><span data-value="level"></span>
             <div class="lane-marker" data-lane aria-label="Полоса"><i></i><i></i><i></i></div>
-            <div class="special-meter" data-special aria-label="Готовность хука и апперкота"><span aria-hidden="true">↑ ↓</span><i></i></div>
+            <div class="special-meter" data-special aria-label="Готовность супер-рывка и апперкота"><span aria-hidden="true">↑ ↓</span><i></i></div>
           </div>
           <progress data-xp max="1" aria-label="Опыт"></progress>
           <button class="hud-mute" data-mute type="button" aria-label="Отключить звук" aria-pressed="false"></button>
@@ -176,7 +176,7 @@ export class HUD {
     const special = combat.specialRemaining(now)
     const ready = special <= 1e-9
     this.special.classList.toggle('recharging', !ready)
-    const fill = String(ready ? 1 : 1 - special / run.balance.specialCooldown)
+    const fill = String(ready ? 1 : combat.specialProgress(now))
     if (this.special.style.getPropertyValue('--special') !== fill) this.special.style.setProperty('--special', fill)
     this.display.hidden = phase === 'ready' && !showTutorialHUD
     this.muteButton.disabled = teaching

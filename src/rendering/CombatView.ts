@@ -4,14 +4,18 @@ import type { AnimationState, EnemyPose, EnemyType, Hand, HandPose } from '../as
 import type { CombatEvent, Effect, Strike } from '../combat/CombatSystem'
 import { createEnemy, type Enemy } from '../combat/EnemyAI'
 import type { ParkRun } from '../game/ParkRun'
+import type { TutorialDemo } from '../game/TutorialDemo'
+import { superTiming, uppercutTiming } from '../combat/balance'
+import { superHandMotion, uppercutHandMotion } from './AttackMotion'
 import { route } from '../world/route'
 import type { PerspectiveProjector } from './PerspectiveProjector'
 
 const hands = ['left', 'right'] as const
 const colors: Record<Effect, number> = {
-  hit: 0xffefbd, hook: 0xffa554, counter: 0xffdc66, ideal: 0xfff383, chain: 0x73efd1,
+  hit: 0xffefbd, dashImpact: 0xffa554, ricochet: 0xffd982, counter: 0xffdc66, ideal: 0xfff383, chain: 0x73efd1,
   air: 0xf7d17d, wave: 0xffb975, electric: 0x84efff, fire: 0xff7537, hurt: 0xf05142,
   miss: 0xe5dbac, rage: 0xf34a49, finish: 0xffcf60, level: 0x9effce, side: 0xffc26e, landing: 0xffd686,
+  bodyContact: 0xf5c891, bodyShove: 0xcfaa82,
 }
 interface Particle extends CombatEvent { at: number }
 interface Slot {
@@ -28,7 +32,9 @@ export class CombatView {
   private readonly slots: Slot[] = []
   private readonly fists: Record<Hand, Phaser.GameObjects.Image>
   private readonly marks: Phaser.GameObjects.Graphics
+  private readonly warnings: Phaser.GameObjects.Graphics
   private readonly effects: Phaser.GameObjects.Graphics
+  private readonly dashFlashes: Phaser.GameObjects.Graphics
   private readonly damageFrame: Phaser.GameObjects.Graphics
   private readonly shadows: Phaser.GameObjects.Graphics
   private readonly previewImage: Phaser.GameObjects.Image
@@ -38,12 +44,16 @@ export class CombatView {
   tutorialFocus?: TutorialFocus
   private frame = 0
   private hurtAt = -Infinity
+  private bodyAt = -Infinity
+  private bodySide = 1
   private defeatAt = -Infinity
 
   constructor(scene: Phaser.Scene, private readonly assets: AssetRegistry) {
     this.shadows = scene.add.graphics().setDepth(-9998)
     this.marks = scene.add.graphics().setDepth(1)
+    this.warnings = scene.add.graphics().setDepth(3.5)
     this.effects = scene.add.graphics().setDepth(2)
+    this.dashFlashes = scene.add.graphics().setDepth(3.2)
     this.damageFrame = scene.add.graphics().setDepth(4)
     this.fists = { left: assets.image('fist.left').setDepth(3), right: assets.image('fist.right').setDepth(3) }
     this.previewImage = assets.image('thug').setVisible(false)
@@ -57,32 +67,42 @@ export class CombatView {
       slot.image.setVisible(false)
     }
     this.particles.length = 0
-    this.hurtAt = this.defeatAt = -Infinity
+    this.hurtAt = this.defeatAt = this.bodyAt = -Infinity
+  }
+
+  bodyRecoil(wall: number) {
+    return this.reducedMotion.matches ? 0 : Math.max(0, 1 - (wall - this.bodyAt) / 0.13)
   }
 
   show(event: CombatEvent, now: number, wall: number) {
+    if (event.kind === 'bodyContact' && wall - this.bodyAt >= 0.08) {
+      this.bodyAt = wall
+      this.bodySide = event.direction ?? 1
+    }
     if (event.kind === 'hurt') this.hurtAt = wall
     else {
       if (this.particles.length >= 30) this.particles.shift()
       this.particles.push({ ...event, at: now })
-      if (event.enemy !== undefined && (event.kind === 'hit' || event.kind === 'hook' ||
+      if (event.enemy !== undefined && (event.kind === 'hit' || event.kind === 'dashImpact' || event.kind === 'ricochet' ||
         event.kind === 'counter' || event.kind === 'ideal' || event.kind === 'chain' ||
         event.kind === 'side' || event.kind === 'air')) {
         const slot = this.slots.find(item => item.id === event.enemy)
         if (slot) {
           slot.frozeAt = now
-          slot.freezeUntil = now + (event.kind === 'ideal' || event.kind === 'hook' ? 0.075 : 0.047)
+          slot.freezeUntil = now + (event.kind === 'ideal' || event.kind === 'air' ? 0.085 : 0.047)
         }
       }
     }
   }
 
-  draw(run: ParkRun, projector: PerspectiveProjector, wall: number, debug: boolean, preview?: AnimationPreview) {
+  draw(run: ParkRun, projector: PerspectiveProjector, wall: number, debug: boolean, preview?: AnimationPreview, demo?: TutorialDemo) {
     this.frame++
     this.tutorialFocus = undefined
     this.shadows.clear()
     this.marks.clear()
+    this.warnings.clear()
     this.effects.clear()
+    this.dashFlashes.clear()
     this.damageFrame.clear()
     this.previewImage.setVisible(false)
     const { width, height } = projector
@@ -125,18 +145,31 @@ export class CombatView {
       this.damageFrame.lineStyle(14, 0xff302c, hurt * 0.93).strokeRect(6, 6, width - 12, height - 12)
       this.damageFrame.lineStyle(8, 0xc82130, hurt * 0.30).strokeRect(16, 16, width - 32, height - 32)
     }
-    const dash = Math.min(1, run.runner.dash * 1.28)
-    if (run.active && dash > 0.06) {
-      for (let i = 0; i < 11; i++) {
+    const superPower = demo?.boost ?? run.runner.superBoost
+    const dash = Math.min(1, (superPower || run.runner.dash) * 1.28)
+    if ((run.active || demo) && dash > 0.06 && !(demo && this.reducedMotion.matches)) {
+      for (let i = 0; i < (superPower > 0.10 ? 20 : 11); i++) {
         const side = i % 2 ? 1 : -1
-        const travel = (now * 2.7 + i * 0.219) % 1
+        const travel = ((demo?.age ?? now) * (superPower ? 4.8 : 2.7) + i * 0.219) % 1
         const x = width / 2 + side * (width * (0.29 + travel * 0.25))
         const y = height * (0.21 + (i % 6) * 0.105 + travel * 0.15)
-        this.effects.lineStyle(i % 3 === 0 ? 2 : 1, 0xffeac0, (1 - travel) * dash * 0.50)
-          .lineBetween(x, y, x + side * (11 + travel * 34), y + 6 + travel * 15)
+        if (superPower > 0.10) {
+          this.effects.fillStyle(i % 3 ? 0xffd68a : 0xfff2c9, (1 - travel) * dash * 0.83)
+          for (let pixel = 0; pixel < 4; pixel++) {
+            this.effects.fillRect(Math.round(x + side * pixel * 7), Math.round(y + pixel * 4),
+              7, i % 3 ? 2 : 3)
+          }
+        } else {
+          this.effects.lineStyle(i % 3 === 0 ? 2 : 1, 0xffeac0, (1 - travel) * dash * 0.50)
+            .lineBetween(x, y, x + side * (11 + travel * 34), y + 6 + travel * 15)
+        }
       }
     }
-    this.drawFists(run, width, height, wall, hurt, preview)
+    if (superPower > 0.1 && run.combat.build.rank('wave')) {
+      const wave = projector.project(run.runner.x, projector.cameraZ + 2.4)
+      this.effects.lineStyle(4, 0xffd26a, 0.44).strokeEllipse(wave.x, wave.y - 19, 210 * wave.scale, 19)
+    }
+    this.drawFists(run, width, height, wall, hurt, preview, demo)
     if (preview && preview.type !== 'hero') {
       const demo = this.previewEnemy
       const age = (wall - preview.start) % 1.7
@@ -234,71 +267,98 @@ export class CombatView {
     }
   }
 
-  private drawFists(run: ParkRun, width: number, height: number, wall: number, hurt: number, preview?: AnimationPreview) {
+  private drawFists(run: ParkRun, width: number, height: number, wall: number, hurt: number, preview?: AnimationPreview, demo?: TutorialDemo) {
     const now = run.visualTime
     if (run.phase === 'defeat' && this.defeatAt === -Infinity) this.defeatAt = wall
     const knockout = Math.max(0, Math.min(1, (wall - this.defeatAt) / 0.5))
     const demoAge = preview?.type === 'hero' ? (wall - preview.start) % 0.85 : 0
     const demoHurt = preview?.type === 'hero' && preview.pose === 'hurt' ? Math.max(0, 1 - demoAge * 3) : hurt
+    const bump = preview || demo ? 0 : this.bodyRecoil(wall)
     const fall = run.phase === 'defeat' ? knockout : preview?.type === 'hero' && preview.pose === 'knockout' ?
       Math.min(1, demoAge / 0.52) : 0
+    const uppercut = run.combat.uppercutStrike
+    const timing = uppercutTiming(run.balance)
+    const dashTiming = superTiming(run.balance)
+    const dashAge = demo ? demo.superAge : run.runner.superActive ? run.runner.superAge : undefined
     for (const hand of hands) {
       const image = this.fists[hand]
       const side = hand === 'left' ? -1 : 1
-      let strike: Strike | undefined = run.combat.strike?.hand === hand ? run.combat.strike : undefined
+      const latest = run.combat.strike
+      const ordinary = latest?.hand === hand && latest.kind !== 'uppercut' &&
+        (dashAge === undefined || latest.at >= now - dashAge - 1e-9) ? latest : undefined
+      const rising = uppercut?.hand === hand && now - uppercut.at < timing.duration ? uppercut : undefined
+      let strike: Strike | undefined = ordinary && (!rising || ordinary.at > rising.at) &&
+        now - ordinary.at < this.strikeDuration(ordinary.kind, run) ? ordinary : rising
       let age = strike ? now - strike.at : 1
+      let superAge = dashAge
       let pose: HandPose = run.active ? run.runner.dash > 0.3 ? 'dash' : 'run' : 'idle'
+      if (demo) {
+        strike = demo.strike?.hand === hand ? demo.strike : undefined
+        age = strike ? -strike.at : 1
+      }
       if (preview?.type === 'hero') {
         pose = preview.pose as HandPose
-        const elapsed = (wall - preview.start) % 0.85
-        if (pose === 'punch' || pose === 'hook' || pose === 'uppercut' || pose === 'sideLeft' ||
+        const elapsed = (wall - preview.start) % (pose === 'superDash' ? dashTiming.duration + 0.45 : 0.9)
+        strike = undefined
+        superAge = pose === 'superDash' ? elapsed : undefined
+        if (pose === 'punch' || pose === 'uppercut' || pose === 'sideLeft' ||
           pose === 'sideRight' || pose === 'counter' || pose === 'finish') {
           strike = { hand, kind: pose, at: now, aim: 0, hit: true }
-          age = hand === (pose === 'sideLeft' ? 'left' : 'right') ? elapsed : 1
+          age = hand === (pose === 'sideLeft' ? 'left' : 'right') ? elapsed : 2
         }
       }
+      const duration = strike ? this.strikeDuration(strike.kind, run) : 1
+      if (age >= duration) strike = undefined
       const kind = strike?.kind
       const lateral = kind === 'sideLeft' ? -1 : kind === 'sideRight' ? 1 : 0
-      const duration = kind === 'finish' ? 0.42 : kind === 'hook' ? 0.27 :
-        kind === 'uppercut' ? 0.30 : lateral ? 0.18 : Math.min(0.23, run.combat.punchInterval)
       const time = Math.min(1, Math.max(0, age / duration))
       const extension = strike ? Math.sin(time ** 0.61 * Math.PI) : 0
-      const swing = kind === 'hook' ? 128 : kind === 'finish' ? 120 : 92
-      if (strike && time < 1) pose = strike.kind
+      const powered = !strike && superAge !== undefined && superAge < dashTiming.duration
+      const thrust = powered ? superHandMotion(superAge!, run.balance) : 0
+      const risingMotion = kind === 'uppercut' ? uppercutHandMotion(age, run.balance) : 0
+      if (powered) pose = 'superDash'
+      if (strike) pose = strike.kind
       if (demoHurt > 0.60) pose = 'hurt'
       if (fall > 0) pose = 'knockout'
       const bob = Math.sin((preview?.type === 'hero' ? wall : now) * (pose === 'dash' ? 15 : 9) + side * 1.2) *
         (pose === 'dash' ? 10 : pose === 'run' || run.active ? 6 : 2)
       const aim = strike ? Math.max(-45, Math.min(45, strike.aim * 25)) : 0
-      const x = width / 2 + side * (102 + fall * 24) + (lateral
-        ? lateral * (-98 + time * 198) * extension : (aim - side * swing) * extension)
-      const lift = kind === 'uppercut' ? extension * (time * 0.74 - 0.11) :
+      const x = width / 2 - this.bodySide * 8 * bump + side * (102 + fall * 24 + thrust * 10) + (lateral
+        ? lateral * (-98 + time * 198) * extension : kind === 'uppercut'
+          ? (aim - side * 65) * Math.max(0, risingMotion) : (aim - side * (kind === 'finish' ? 120 : 92)) * extension)
+      const lift = powered ? thrust * 0.27 : kind === 'uppercut' ? risingMotion * 0.46 :
         lateral ? extension * 0.14 : extension * 0.31
-      const y = height - 103 + bob - lift * height + fall * 122 + demoHurt * 17
-      const scale = 1 - extension * 0.33 + (kind === 'counter' ? extension * 0.12 : 0)
+      const y = height - 103 + bob - lift * height + fall * 122 + demoHurt * 17 + bump * 8
+      const scale = powered ? 1 + thrust * 0.28 : kind === 'uppercut' ? 1 + risingMotion * 0.31 :
+        1 - extension * 0.33 + (kind === 'counter' ? extension * 0.12 : 0)
       const id = hand === 'left' ? 'fist.left' : 'fist.right'
-      this.assets.pose(image, id, pose, strike ? age : now)
+      this.assets.pose(image, id, pose, powered ? superAge! : strike ? age : now)
       this.assets.place(image, id, x, y, scale)
-      image.setRotation(side * (0.11 + fall * 0.6 + demoHurt * 0.24) +
-        extension * side * (kind === 'hook' ? 0.62 : kind === 'counter' ? -0.24 :
-          kind === 'uppercut' ? -0.52 : lateral ? -0.78 : -0.10))
+      image.setRotation(-this.bodySide * bump * 0.06 + side * (0.11 + fall * 0.6 + demoHurt * 0.24 - thrust * 0.16) +
+        extension * side * (kind === 'counter' ? -0.24 : kind === 'uppercut' ? -0.52 : lateral ? -0.78 : -0.10))
     }
+  }
+
+  private strikeDuration(kind: Strike['kind'], run: ParkRun) {
+    return kind === 'finish' ? 0.42 : kind === 'uppercut' ? uppercutTiming(run.balance).duration :
+      kind === 'sideLeft' || kind === 'sideRight' ? 0.18 : Math.min(0.23, run.combat.punchInterval)
   }
 
   private warning(x: number, y: number, counter: boolean, ideal: boolean, scale = 1) {
     const color = counter ? ideal ? 0xfff0a5 : 0xffcf4c : 0xff594b
     const radius = (counter ? 12 : 10) * scale
-    if (scale > 1) this.marks.fillStyle(0xffcf4c, 0.30).fillCircle(x, y, radius + 5)
-    this.marks.fillStyle(0x272423).fillCircle(x, y, radius)
-    this.marks.lineStyle((counter && ideal ? 3 : 2) * scale, color).strokeCircle(x, y, radius)
-    this.marks.fillStyle(color).fillRect(x - 2 * scale, y - 6 * scale, 4 * scale, 8 * scale)
+    if (scale > 1) this.warnings.fillStyle(0xffcf4c, 0.30).fillCircle(x, y, radius + 5)
+    this.warnings.fillStyle(0x272423).fillCircle(x, y, radius)
+    this.warnings.lineStyle((counter && ideal ? 3 : 2) * scale, color).strokeCircle(x, y, radius)
+    this.warnings.fillStyle(color).fillRect(x - 2 * scale, y - 6 * scale, 4 * scale, 8 * scale)
       .fillCircle(x, y + 5 * scale, 2 * scale)
   }
 
   private drawParticles(projector: PerspectiveProjector, now: number) {
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const effect = this.particles[i]
-      const life = effect.kind === 'finish' || effect.kind === 'rage' ? 0.60 : effect.kind === 'level' ? 0.48 : 0.33
+      const shove = effect.kind === 'bodyContact' || effect.kind === 'bodyShove' || effect.kind === 'dashImpact'
+      const life = shove ? 0.22 : effect.kind === 'finish' || effect.kind === 'rage' ? 0.60 : effect.kind === 'level' ? 0.48 : 0.33
       const progress = (now - effect.at) / life
       if (progress >= 1) { this.particles.splice(i, 1); continue }
       const point = projector.project(effect.x, effect.z)
@@ -306,6 +366,27 @@ export class CombatView {
       const color = colors[effect.kind]
       if (effect.kind === 'level') {
         this.effects.lineStyle(3, color, alpha * 0.48).strokeRect(5, 5, projector.width - 10, projector.height - 10)
+        continue
+      }
+      if (shove) {
+        const dash = effect.kind === 'dashImpact'
+        const graphics = dash ? this.dashFlashes : this.effects
+        const direction = effect.direction ?? 1
+        const falloff = Math.max(0, Math.min(1, (0.55 - point.distance) / 0.55))
+        if (effect.kind === 'bodyShove' && point.distance < 0) continue
+        const nearX = projector.width * (0.5 + direction * (dash ? 0.18 : 0.21))
+        const x = point.x + (nearX - point.x) * falloff
+        const worldY = point.y - Math.min(100, 80 * point.scale)
+        const y = worldY + (projector.height * (dash ? 0.69 : 0.78) - worldY) * falloff
+        const travel = (dash ? 50 : 36) * (0.32 + progress)
+        graphics.lineStyle(dash ? 3 : 2, color, alpha)
+        for (let ray = -2; ray <= 2; ray++) {
+          const dx = travel * (1 - Math.abs(ray) * 0.13)
+          graphics.lineBetween(x + direction * dx * 0.35, y + ray * 5,
+            x + direction * dx, y + ray * (7 + progress * 12))
+        }
+        graphics.fillStyle(dash ? 0xffefbc : color, alpha * (1 - progress))
+          .fillRect(x - 3, y - 3, dash ? 8 : 5, dash ? 8 : 5)
         continue
       }
       if (point.distance < -2) continue
@@ -326,7 +407,8 @@ export class CombatView {
         }
         continue
       }
-      const radius = (effect.kind === 'finish' ? 95 : effect.kind === 'wave' || effect.kind === 'hook' || effect.kind === 'landing' ? 44 :
+      const radius = (effect.kind === 'finish' ? 95 : effect.kind === 'air' ? 65 : effect.kind === 'ricochet' ? 52 :
+        effect.kind === 'wave' || effect.kind === 'landing' ? 44 :
         effect.kind === 'miss' ? 15 : 27) * (0.4 + progress * 1.1)
       this.effects.lineStyle(effect.kind === 'miss' ? 1 : 2.5, color, effect.kind === 'miss' ? alpha * 0.32 : alpha)
         .strokeEllipse(point.x, y, radius * 1.30, effect.kind === 'wave' || effect.kind === 'landing' ? radius * 0.36 : radius)

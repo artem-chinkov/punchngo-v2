@@ -15,6 +15,8 @@ export interface EnemyBalance {
 export interface Balance {
   hp: number
   speed: number
+  holdSlowdownPerSecond: number
+  holdMinSpeedPercent: number
   dashMultiplier: number
   dashLimit: number
   dashDuration: number
@@ -23,14 +25,24 @@ export interface Balance {
   minPunchInterval: number
   holdHurtPause: number
   specialCooldown: number
-  hookDamage: number
-  hookForce: number
-  hookSplashDamage: number
-  hookSplashDepth: number
-  hookWaveDamage: number
-  hookWaveDepth: number
+  superSpeed: number
+  superDuration: number
+  superPrepare: number
+  superFade: number
+  superRecovery: number
+  superDamage: number
+  superPush: number
+  superTargets: number
   electricDamage: number
   electricRadius: number
+  uppercutAnimation: number
+  uppercutWindup: number
+  uppercutDrive: number
+  uppercutFlight: number
+  uppercutTransfer: number
+  uppercutMaxSpeed: number
+  uppercutChainDepth: number
+  counterTutorialLock: number
   uppercutDamage: number
   uppercutLift: number
   uppercutForce: number
@@ -69,11 +81,14 @@ export interface Balance {
 }
 
 export const defaultBalance: Balance = {
-  hp: 100, speed: 6.4, dashMultiplier: 2, dashLimit: 2.12, dashDuration: 0.5, laneDuration: 0.18,
+  hp: 100, speed: 6.4, holdSlowdownPerSecond: 15, holdMinSpeedPercent: 25,
+  dashMultiplier: 2, dashLimit: 2.12, dashDuration: 0.5, laneDuration: 0.18,
   punchInterval: 0.25, minPunchInterval: 0.18, holdHurtPause: 0.12,
-  specialCooldown: 0.7, hookDamage: 1.5, hookForce: 1.33, hookSplashDamage: 0.42, hookSplashDepth: 1,
-  hookWaveDamage: 0.61, hookWaveDepth: 2, electricDamage: 0.55, electricRadius: 3.9,
-  uppercutDamage: 1.25, uppercutLift: 5.7, uppercutForce: 0.65, landingDamage: 0.4, landingRadius: 1.9,
+  specialCooldown: 0.7, superSpeed: 2.8, superDuration: 1.2, superPrepare: 0.1, superFade: 0.3,
+  superRecovery: 0.8, superDamage: 0.5, superPush: 9, superTargets: 4, electricDamage: 0.55, electricRadius: 3.9,
+  uppercutAnimation: 0.55, uppercutWindup: 0.12, uppercutDrive: 0.13, uppercutFlight: 0.95,
+  uppercutTransfer: 1.04, uppercutMaxSpeed: 48, uppercutChainDepth: 2, counterTutorialLock: 2.5,
+  uppercutDamage: 1.4, uppercutLift: 6.4, uppercutForce: 2.3, landingDamage: 0.4, landingRadius: 1.9,
   sideDamage: 0.7, sideForce: 0.82, sideImpulse: 6.2,
   inputBuffer: 0.105, damage: 24, reach: 3.2, knockback: 13,
   chainDamage: 0.5, chainDepth: 2, chainTargets: 5, immunity: 0.8,
@@ -87,4 +102,19 @@ export const defaultBalance: Balance = {
     brute: { hp: 65, contact: 8, damage: 20, speed: 0.26, windup: 0.76, recovery: 0.60, resistance: 0.67, score: 250, xp: 31 },
     bulldog: { hp: 1450, contact: 0, damage: 26, speed: 2.1, windup: 0.86, recovery: 0.31, resistance: 0.87, score: 1000, xp: 0 },
   },
+}
+
+// Keep at least one fixed simulation step for the driven phase at extreme DEV settings.
+export function superTiming(balance: Balance) {
+  const duration = Math.max(0.05, balance.superDuration)
+  const prepare = Math.min(balance.superPrepare, duration - 1 / 60)
+  const fade = Math.min(balance.superFade, duration - prepare - 1 / 60)
+  return { duration, prepare, fade, cruiseEnd: duration - fade }
+}
+
+export function uppercutTiming(balance: Balance) {
+  const duration = Math.max(0.08, balance.uppercutAnimation)
+  const windup = Math.min(balance.uppercutWindup, duration - 0.04)
+  const drive = Math.min(balance.uppercutDrive, duration - windup - 0.02)
+  return { duration, windup, drive }
 }

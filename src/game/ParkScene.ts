@@ -7,16 +7,18 @@ import { TouchController, type InputMode } from '../input/TouchController'
 import { CombatView } from '../rendering/CombatView'
 import { ParkView } from '../rendering/ParkView'
 import { PerspectiveProjector } from '../rendering/PerspectiveProjector'
-import { TutorialOverlay } from '../ui/TutorialOverlay'
+import { counterEntranceSeconds, TutorialOverlay } from '../ui/TutorialOverlay'
 import { HUD } from '../ui/HUD'
 import { defaultWorld } from '../world/route'
 import { Onboarding, type TutorialStage } from './Onboarding'
+import { tutorialDemo } from './TutorialDemo'
 import { FrameClock } from './FrameClock'
 import { ParkRun } from './ParkRun'
 import { readRecords, recordResult } from './records'
 
 const landscape = matchMedia('(orientation: landscape) and (pointer: coarse)')
 const query = new URLSearchParams(location.search)
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
 
 export class ParkScene extends Phaser.Scene {
   private assets!: AssetRegistry
@@ -59,7 +61,7 @@ export class ParkScene extends Phaser.Scene {
     if (query.get('debug') === '1') this.debug = new BalancePanel(root, () => {
       this.resetInput()
       this.renderFrame()
-    }, atBoss => { this.audio.unlock(); this.restart(atBoss) }, this.replayTutorial)
+    }, atBoss => { this.audio.unlock(); this.restart(atBoss) }, this.replayTutorial, kind => this.onboarding.forceHint(kind))
     this.run = this.createRun()
     this.touch = new TouchController(this.game.canvas, () => this.inputMode(), mode => {
       this.audio.unlock()
@@ -67,9 +69,9 @@ export class ParkScene extends Phaser.Scene {
       else this.run.tap()
     }, direction => {
       this.audio.unlock()
-      if (direction === 'up' || direction === 'down') this.run.special(direction === 'up' ? 'hook' : 'uppercut')
+      if (direction === 'up' || direction === 'down') this.run.special(direction === 'up' ? 'superDash' : 'uppercut')
       else this.run.swipe(direction === 'left' ? -1 : 1)
-    })
+    }, undefined, root.parentElement ?? this.game.canvas)
     this.visibilityChanged()
     landscape.addEventListener('change', this.visibilityChanged)
     document.addEventListener('visibilitychange', this.visibilityChanged)
@@ -117,6 +119,7 @@ export class ParkScene extends Phaser.Scene {
   private resetInput = () => {
     this.touch?.cancel()
     this.hud?.cancelInput()
+    this.tutorial?.cancelInput()
     this.run?.clearInput()
     this.clock.reset()
   }
@@ -128,7 +131,7 @@ export class ParkScene extends Phaser.Scene {
 
   private inputMode(): InputMode {
     if (!this.run.active || landscape.matches || document.hidden || this.debug?.paused) return 'off'
-    return this.run.tutorialTarget ? 'counter' : 'play'
+    return this.run.tutorialTarget ? this.onboarding.counterReady ? 'counter' : 'off' : 'play'
   }
 
   private replayTutorial = () => {
@@ -144,7 +147,7 @@ export class ParkScene extends Phaser.Scene {
   }
 
   private tutorialStage(): TutorialStage {
-    if (this.run.tutorialTarget) return 'counter'
+    if (this.run.tutorialTarget) return this.onboarding.counterReady ? 'counterReady' : 'counterLocked'
     if (this.run.phase === 'ready') {
       if (this.onboarding.showControls) return 'controls'
       if (this.onboarding.counting) return 'countdown'
@@ -183,18 +186,26 @@ export class ParkScene extends Phaser.Scene {
     combat.events.length = 0
     for (const cue of combat.audioCues) this.audio.play(cue)
     combat.audioCues.length = 0
+    const counter = !!this.run.tutorialTarget
+    const guard = counter ? this.onboarding.counterFrame(this.wall, this.run.balance.counterTutorialLock,
+      this.touch?.hasContacts ?? false, reducedMotion.matches ? 0 : counterEntranceSeconds) : 0
     const stage = this.tutorialStage()
     const teaching = stage !== 'none' && stage !== 'success'
-    this.audio.update(this.run.phase, combat.boss?.bossPhase, seconds, stage === 'counter')
-    const hookKick = combat.strike?.kind === 'hook' && combat.strike.hit ?
-      Math.max(0, 1 - (now - combat.strike.at) / 0.14) * 0.62 : 0
-    const projection = new PerspectiveProjector(width, height, runner.z, world, runner.x, runner.dash + hookKick)
+    const demo = stage === 'controls' ? tutorialDemo(this.onboarding.demoAge(this.wall), this.run.balance,
+      reducedMotion.matches) : undefined
+    this.onboarding.updateHints(this.run, this.debug?.contextHints ?? true, stage === 'none' && !this.debug?.paused)
+    this.audio.update(this.run.phase, combat.boss?.bossPhase, seconds, counter)
+    this.audio.updateDashWind(this.run.active && !teaching && !this.debug?.paused ? runner.superBoost : 0)
+    const cameraBoost = (demo?.boost ?? runner.superBoost) * (reducedMotion.matches ? 0 : 1.9)
+    const projection = new PerspectiveProjector(width, height, runner.z + (demo?.z ?? 0), world,
+      runner.x + (demo?.x ?? 0), runner.dash + cameraBoost - this.combatView.bodyRecoil(this.wall) * 0.45)
     this.park.draw(projection, world.viewDistance, Math.max(0, Math.min(1, (this.run.now - 80) / 65)))
     this.debug?.setTutorialHidden(teaching)
     this.debug?.draw(this.run, this.game.loop.actualFps, this.wall)
-    this.combatView.draw(this.run, projection, this.wall, this.debug?.zones ?? false, this.debug?.preview)
+    this.combatView.draw(this.run, projection, this.wall, this.debug?.zones ?? false, this.debug?.preview, demo)
     this.hud.draw(this.run, this.records, this.wall, !!(this.debug?.preview || this.debug?.cameraOpen),
       teaching, stage === 'controls' || stage === 'countdown')
-    this.tutorial.draw(stage, stage === 'countdown' ? this.onboarding.count(this.wall) : 0, this.combatView.tutorialFocus)
+    this.tutorial.draw(stage, stage === 'countdown' ? this.onboarding.count(this.wall) : 0,
+      this.combatView.tutorialFocus, demo?.kind, this.onboarding.hint, guard)
   }
 }

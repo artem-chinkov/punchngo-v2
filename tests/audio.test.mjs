@@ -9,7 +9,7 @@ const { nextMusicBar, readAudioSettings, saveAudioSettings } = await vite.ssrLoa
 
 const read = path => readFile(new URL(path, import.meta.url))
 
-test('the shipped audio pack has three music tracks and all 27 WAV variants', async () => {
+test('the shipped audio pack has three music tracks and all 28 WAV files, including the wind loop', async () => {
   const manifest = JSON.parse(await read('../src/audio/audio_manifest.json'))
   assert.deepEqual(manifest.music.map(track => track.key),
     ['music.park', 'music.bulldog.phase1', 'music.bulldog.phase2'])
@@ -18,7 +18,7 @@ test('the shipped audio pack has three music tracks and all 27 WAV variants', as
   assert.equal(first.bpm, second.bpm)
   assert.equal(first.bars, second.bars)
   const wav = manifest.sfx.flatMap(item => item.files)
-  assert.equal(new Set(wav).size, 27)
+  assert.equal(new Set(wav).size, 28)
   for (const path of wav) {
     const file = await read('../public/assets/audio/' + path)
     assert.equal(file.toString('ascii', 0, 4), 'RIFF', path)
