@@ -20,7 +20,7 @@
 | Интерфейс и локальная настройка | `src/ui/HUD.ts`, `src/debug/BalancePanel.ts`, `src/style.css`, `src/main.ts`, `index.html` |
 | Сборка и проверка | `package.json`, `package-lock.json`, `tests/park.test.mjs`, `.github/workflows/check.yml`, `GAME_DESIGN.md`, `TECH_SPEC.md`, `README.md` |
 
-Цикл Sandbox, его старые тесты и workflow публикации заменены в копии v2. Исходный каталог v1 и GitHub не менялись.
+Цикл Sandbox и его старые тесты заменены в v2. Публикация на GitHub Pages настроена в отдельном репозитории v2; исходный каталог и публикация v1 не менялись.
 
 ## Проверки и найденные проблемы
 
