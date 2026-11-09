@@ -31,8 +31,6 @@ export interface Balance {
   superFade: number
   superRecovery: number
   superDamage: number
-  superPush: number
-  superTargets: number
   electricDamage: number
   electricRadius: number
   uppercutAnimation: number
@@ -85,7 +83,7 @@ export const defaultBalance: Balance = {
   dashMultiplier: 2, dashLimit: 2.12, dashDuration: 0.5, laneDuration: 0.18,
   punchInterval: 0.25, minPunchInterval: 0.18, holdHurtPause: 0.12,
   specialCooldown: 0.7, superSpeed: 2.8, superDuration: 1.2, superPrepare: 0.1, superFade: 0.3,
-  superRecovery: 0.8, superDamage: 0.5, superPush: 9, superTargets: 4, electricDamage: 0.55, electricRadius: 3.9,
+  superRecovery: 0.8, superDamage: 0.5, electricDamage: 0.55, electricRadius: 3.9,
   uppercutAnimation: 0.55, uppercutWindup: 0.12, uppercutDrive: 0.13, uppercutFlight: 0.95,
   uppercutTransfer: 1.04, uppercutMaxSpeed: 48, uppercutChainDepth: 2, counterTutorialLock: 2.5,
   uppercutDamage: 1.4, uppercutLift: 6.4, uppercutForce: 2.3, landingDamage: 0.4, landingRadius: 1.9,
@@ -109,7 +107,7 @@ export function superTiming(balance: Balance) {
   const duration = Math.max(0.05, balance.superDuration)
   const prepare = Math.min(balance.superPrepare, duration - 1 / 60)
   const fade = Math.min(balance.superFade, duration - prepare - 1 / 60)
-  return { duration, prepare, fade, cruiseEnd: duration - fade }
+  return { duration, prepare, fade, cruiseEnd: duration - fade, handsReady: Math.min(duration, prepare + 0.09) }
 }
 
 export function uppercutTiming(balance: Balance) {

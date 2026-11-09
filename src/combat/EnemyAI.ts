@@ -5,8 +5,7 @@ import type { Balance } from './balance'
 
 export interface Chain {
   visited: Set<number>
-  kind?: 'uppercut' | 'superDash' | 'body'
-  limit?: number
+  kind?: 'uppercut' | 'body'
 }
 
 export interface Enemy {
@@ -40,6 +39,7 @@ export interface Enemy {
   burnAt: number
   burnDamage: number
   bossPhase: 1 | 2
+  dashPushed: boolean
 }
 
 export function createEnemy(id: number, type: EnemyType, lane: Lane, z: number, hp: number, now: number): Enemy {
@@ -47,7 +47,7 @@ export function createEnemy(id: number, type: EnemyType, lane: Lane, z: number, 
   return { id, type, lane, destination: lane, x, z, previousX: x, previousZ: z, previousY: 0, y: 0, vy: 0, vx: 0, vz: 0,
     hp, maxHp: hp, pose: 'approach', since: now, until: now, nextLane: now + 0.55 + (id % 3) * 0.24,
     contactUntil: 0, contactSide: 0, flightUntil: 0, depth: 0, removeAt: Infinity,
-    burnTicks: 0, burnAt: Infinity, burnDamage: 0, bossPhase: 1 }
+    burnTicks: 0, burnAt: Infinity, burnDamage: 0, bossPhase: 1, dashPushed: false }
 }
 
 export function setPose(enemy: Enemy, pose: EnemyPose, now: number, duration = 0) {
@@ -88,6 +88,7 @@ export class EnemyAI {
       enemy.previousX = enemy.x
       enemy.previousZ = enemy.z
       enemy.previousY = enemy.y
+      if (enemy.dashPushed) continue
       if (this.advanceFlight(enemy, runner, now, dt, land) || enemy.hp <= 0) continue
       if (enemy.type === 'bulldog') {
         this.boss(enemy, runner, now, dt, strike)
@@ -173,7 +174,11 @@ export class EnemyAI {
   private boss(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy) => void) {
     const stats = this.balance.enemies.bulldog
     const move = runner.z - runner.previousZ
-    const follow = () => { enemy.z = Math.max(runner.z + 1.12, enemy.z) }
+    // The ram's swept solver owns the barrier during powered movement. Following
+    // the proposed camera position here would move the boss out of its way.
+    const follow = () => {
+      if (runner.superSweepTo <= runner.superSweepFrom) enemy.z = Math.max(runner.z + 1.12, enemy.z)
+    }
 
     if (enemy.pose === 'stunned' || enemy.pose === 'rage' || enemy.pose === 'recovery') {
       follow()

@@ -6,12 +6,13 @@ import { laneAt, laneX, route, type Lane } from '../world/route'
 import { createEnemy, EnemyAI, flightEdge, inCounterWindow, moveFlightPlanar, setPose, type Chain, type Enemy } from './EnemyAI'
 import { superTiming, uppercutTiming, type Balance } from './balance'
 import { sweepBodies, sweepBox } from './sweep'
+import { DashPush } from './DashPush'
 
 export type Effect = 'hit' | 'dashImpact' | 'ricochet' | 'counter' | 'ideal' | 'chain' | 'air' | 'wave' | 'electric' |
   'fire' | 'hurt' | 'miss' | 'rage' | 'finish' | 'level' | 'side' | 'landing' | 'bodyContact' | 'bodyShove'
 type Side = -1 | 1
 type Impact = { x: number; z: number; direction?: Side }
-type Crossing = { enemy: Enemy; time: number; dash: boolean }
+type Crossing = { enemy: Enemy; time: number }
 const bodyWidth = 0.66
 const bodyBehind = 0.18
 const bodyAhead = 0.55
@@ -43,6 +44,7 @@ export class CombatSystem {
   readonly audioCues: SfxCue[] = []
   readonly build = new Build()
   readonly learnedActions = new Set<LearnedAction>()
+  readonly dashPush = new DashPush()
   hp: number
   xp = 0
   score = 0
@@ -62,7 +64,6 @@ export class CombatSystem {
   private hand: Hand = 'left'
   private uppercutHand: Hand = 'left'
   private uppercutImpact = Infinity
-  private superChain?: Chain
   private specialDuration = 1
   private nextPunch = 0
   private lastTap = -Infinity
@@ -107,6 +108,7 @@ export class CombatSystem {
   tap(runner: Runner, now: number) {
     if (!this.canStrike()) return false
     const counter = this.counterTarget(runner, now)
+    if (!counter && !runner.superHandsReady) return false
     const ideal = !!counter && counter.until - now <= this.balance.idealWindow &&
       now - this.lastTap >= this.punchInterval * this.balance.idealTapGap
     this.lastTap = now
@@ -124,18 +126,19 @@ export class CombatSystem {
   }
 
   holdAttack(runner: Runner, now: number, dash = false) {
-    if (!this.canStrike() || this.pendingTap !== undefined || !this.punchReady(now) ||
+    if (!this.canStrike() || !runner.superHandsReady || this.pendingTap !== undefined || !this.punchReady(now) ||
       now < this.holdBlockedUntil) return false
     this.punch(runner, now, dash ? 1 : undefined)
     return true
   }
 
   special(runner: Runner, now: number, kind: Special) {
-    if (!this.canStrike() || this.specialRemaining(now) > 1e-9) return false
+    if (!this.canStrike() || runner.superActive || this.specialRemaining(now) > 1e-9) return false
     if (kind === 'superDash') {
       if (!runner.launchSuper()) return false
       this.specialDuration = superTiming(this.balance).duration + this.balance.superRecovery
-      this.superChain = { kind, visited: new Set(), limit: this.balance.superTargets }
+      this.dashPush.start(now)
+      this.pendingTap = undefined
       this.audioCues.push('dash.start')
       if (this.build.rank('wave')) this.audioCues.push('upgrade.shockwave')
     } else {
@@ -171,7 +174,7 @@ export class CombatSystem {
   }
 
   sideStrike(runner: Runner, now: number, direction: -1 | 1) {
-    if (!this.canStrike()) return false
+    if (!this.canStrike() || !runner.superHandsReady) return false
     const from = runner.lane
     if (!runner.changeLane(direction)) return false
     this.learnedActions.add('side')
@@ -223,20 +226,40 @@ export class CombatSystem {
 
   update(runner: Runner, now: number, dt: number, invulnerable = false) {
     if (!this.canStrike()) return
+    this.correctedX.clear()
     if (now + 1e-9 >= this.uppercutImpact) this.resolveUppercut(runner, now)
     if (!this.canStrike()) return
     if (this.pendingTap !== undefined && this.punchReady(now)) {
       const at = this.pendingTap
       this.pendingTap = undefined
-      if (now - at <= this.balance.inputBuffer + dt) this.punch(runner, now, this.build.acceleration)
+      if (runner.superHandsReady && now - at <= this.balance.inputBuffer + dt) this.punch(runner, now, this.build.acceleration)
     }
     if (!this.canStrike()) return
 
     const bossPose = this.boss?.pose
     this.landings.length = 0
+    const attacks: Enemy[] = []
     this.ai.update(this.enemies, runner, now, dt, enemy => {
-      if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].damage, now, 'attack', runner)
+      if (runner.superSweepTo > runner.superSweepFrom) attacks.push(enemy)
+      else if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].damage, now, 'attack', runner)
     }, enemy => { if (enemy.landingWave) this.landings.push(enemy) })
+
+    this.resolveContacts(runner, now, dt, invulnerable, true)
+    if (!this.canStrike()) return
+    this.dashPush.update(runner, this.enemies, now, dt, this.build.rank('wave') > 0, (enemy, point) => {
+      this.audioCues.push('dash.impact')
+      this.hit(enemy, this.baseDamage * this.balance.superDamage, now, 'dashImpact', undefined, point)
+      this.dashElectric(runner, now, enemy, { visited: new Set([enemy.id]) })
+    })
+    if (!this.canStrike()) return
+    for (const enemy of attacks) {
+      const gap = enemy.z - runner.z
+      if (!invulnerable && enemy.hp > 0 && gap > -0.4 &&
+        (enemy.type === 'bulldog' ? gap <= 3.55 :
+          !enemy.dashPushed && !this.dashPush.touched.has(enemy.id) && gap <= 2.65 && Math.abs(enemy.x - runner.x) < 0.84)) {
+        this.hurt(enemy, this.balance.enemies[enemy.type].damage, now, 'attack', runner)
+      }
+    }
 
     const nextBossPose = this.boss?.pose
     if (nextBossPose !== bossPose) {
@@ -255,7 +278,7 @@ export class CombatSystem {
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const enemy = this.enemies[i]
       const flying = now < enemy.flightUntil || enemy.y > 0
-      if (enemy.type !== 'bulldog' && (now >= enemy.removeAt || (enemy.z < runner.z - 3.5 && !flying))) {
+      if (enemy.type !== 'bulldog' && !enemy.dashPushed && (now >= enemy.removeAt || (enemy.z < runner.z - 3.5 && !flying))) {
         this.enemies.splice(i, 1)
         continue
       }
@@ -295,8 +318,9 @@ export class CombatSystem {
     this.beginStrike(runner, now, 'punch', target)
     if (!target) return
     this.audioCues.push(target.type === 'brute' || target.type === 'bulldog' ? 'punch.heavy_hit' : 'punch.hit')
+    const pushed = target.dashPushed
     this.hit(target, this.baseDamage, now, 'hit')
-    if (this.canDisplace(target)) this.impulse(target, { visited: new Set([target.id]) }, 0, 0, this.force, now, 0.66)
+    if (!pushed && this.canDisplace(target)) this.impulse(target, { visited: new Set([target.id]) }, 0, 0, this.force, now, 0.66)
   }
 
   private counter(runner: Runner, now: number, target: Enemy, ideal: boolean) {
@@ -322,18 +346,15 @@ export class CombatSystem {
     setPose(target, 'stunned', now, (boss ? this.balance.counterStun : this.balance.regularCounterStun) + this.build.stunBonus)
   }
 
-  private resolveContacts(runner: Runner, now: number, dt: number, invulnerable: boolean) {
-    const chain = this.superChain
+  private resolveContacts(runner: Runner, now: number, dt: number, invulnerable: boolean, preparationOnly = false) {
     const from = runner.superSweepFrom
     const to = runner.superSweepTo
     const driven = to > from
-    const canDash = driven && chain && chain.visited.size < this.chainLimit(chain)
+    if (preparationOnly && (!driven || from <= 0)) return
     const rx = runner.x - runner.previousX
-    const wave = this.build.rank('wave') > 0
     this.crossings.length = 0
-    this.correctedX.clear()
     for (const enemy of this.enemies) {
-      if (enemy.hp <= 0) continue
+      if (enemy.hp <= 0 || enemy.dashPushed || this.dashPush.touched.has(enemy.id)) continue
       const gap = enemy.previousZ - runner.previousZ
       if (enemy.contactSide) {
         if (now < enemy.contactUntil || (gap >= -bodyBehind - 0.08 && gap <= bodyAhead + 0.08 &&
@@ -346,48 +367,29 @@ export class CombatSystem {
         const body = (start: number, end: number, z0: number, z1: number) =>
           this.crossingTime(enemy, runner, start, end, z0, z1, bodyWidth, bodyAhead, bodyHeight)
         let time = driven && from > 0 ? body(0, from, runner.previousZ, runner.superSweepZFrom) : Infinity
-        if (!Number.isFinite(time) && driven) time = body(from, to, runner.superSweepZFrom, runner.superSweepZTo)
-        if (!Number.isFinite(time) && (!driven || to < 1)) time = driven ?
+        if (!preparationOnly && !Number.isFinite(time) && driven) time = body(from, to, runner.superSweepZFrom, runner.superSweepZTo)
+        if (!preparationOnly && !Number.isFinite(time) && (!driven || to < 1)) time = driven ?
           body(to, 1, runner.superSweepZTo, runner.z) : body(0, 1, runner.previousZ, runner.z)
-        if (Number.isFinite(time)) this.crossings.push({ enemy, time, dash: false })
-      }
-      if (canDash && !chain.visited.has(enemy.id)) {
-        const time = this.crossingTime(enemy, runner, from, to, runner.superSweepZFrom, runner.superSweepZTo,
-          wave ? route.laneWidth + 0.72 : 0.72, wave ? 1.45 : 1.12, 1.10)
-        if (Number.isFinite(time) && (!wave ||
-          Math.abs(laneAt(enemy.previousX + (enemy.x - enemy.previousX) * time) - laneAt(runner.previousX + rx * time)) <= 1)) {
-          this.crossings.push({ enemy, time, dash: true })
-        }
+        if (Number.isFinite(time)) this.crossings.push({ enemy, time })
       }
     }
-    this.crossings.sort((a, b) => a.time - b.time || Number(b.dash) - Number(a.dash) || a.enemy.id - b.enemy.id)
-    for (const { enemy, time, dash } of this.crossings) {
+    this.crossings.sort((a, b) => a.time - b.time || a.enemy.id - b.enemy.id)
+    for (const { enemy, time } of this.crossings) {
       if (!this.canStrike()) break
       if (enemy.hp <= 0 || enemy.contactSide) continue
       const x = enemy.previousX + (enemy.x - enemy.previousX) * time
       const z = enemy.previousZ + (enemy.z - enemy.previousZ) * time
       const heroX = runner.previousX + rx * time
       const direction = this.shoveSide(enemy, heroX, x)
-      if (dash) {
-        if (!chain || chain.visited.has(enemy.id) || chain.visited.size >= this.chainLimit(chain)) continue
-        const first = chain.visited.size === 0
-        chain.visited.add(enemy.id)
-        this.audioCues.push('dash.impact')
-        this.hit(enemy, this.baseDamage * this.balance.superDamage, now, 'dashImpact', undefined, { x, z, direction })
-        if (this.canDisplace(enemy)) this.shove(enemy, chain, 0, { x, z, direction },
-          this.balance.superPush * 1.30 * this.build.knockback, this.force * 0.48, now, 0.44, dt * (1 - time))
-        if (first) this.dashElectric(runner, now, enemy, chain)
-      } else {
-        const flight = enemy.chain
-        const alreadyFlying = now < enemy.flightUntil || enemy.y > 0
-        const bodyChain = flight ?? { kind: 'body', visited: new Set([enemy.id]) } as const
-        this.events.push({ kind: alreadyFlying ? 'bodyShove' : 'bodyContact', enemy: enemy.id, x, z, direction })
-        if (!alreadyFlying) {
-          this.audioCues.push('enemy.collision')
-          if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].contact, now, 'contact', runner)
-        }
-        this.shove(enemy, bodyChain, flight ? enemy.depth : 0, { x, z, direction }, 8.4, 4.3, now, 0.38, dt * (1 - time))
+      const flight = enemy.chain
+      const alreadyFlying = now < enemy.flightUntil || enemy.y > 0
+      const bodyChain = flight ?? { kind: 'body', visited: new Set([enemy.id]) } as const
+      this.events.push({ kind: alreadyFlying ? 'bodyShove' : 'bodyContact', enemy: enemy.id, x, z, direction })
+      if (!alreadyFlying) {
+        this.audioCues.push('enemy.collision')
+        if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].contact, now, 'contact', runner)
       }
+      this.shove(enemy, bodyChain, flight ? enemy.depth : 0, { x, z, direction }, 8.4, 4.3, now, 0.38, dt * (1 - time))
     }
     // A laterally flying enemy must be outside the player's body before the
     // camera crosses it, even if a fast frame leaves very little reaction time.
@@ -431,12 +433,8 @@ export class CombatSystem {
     moveFlightPlanar(enemy, Math.min(duration, remaining))
   }
 
-  private chainLimit(chain: Chain) {
-    return Math.min(this.balance.chainTargets, chain.limit ?? this.balance.chainTargets)
-  }
-
   private dashElectric(runner: Runner, now: number, target: Enemy, chain: Chain) {
-    if (!this.build.rank('electric') || chain.visited.size >= this.chainLimit(chain)) return
+    if (!this.build.rank('electric') || chain.visited.size >= this.balance.chainTargets) return
     let neighbor: Enemy | undefined
     let distance = this.balance.electricRadius
     for (const enemy of this.enemies) {
@@ -462,7 +460,7 @@ export class CombatSystem {
     this.audioCues.push('upgrade.shockwave')
     this.emit('landing', source.x, source.z)
     for (const enemy of this.enemies) {
-      if (chain.visited.size >= this.chainLimit(chain)) break
+      if (chain.visited.size >= this.balance.chainTargets) break
       if (enemy.hp <= 0 || enemy.y > 0.81 || chain.visited.has(enemy.id) ||
         Math.hypot(enemy.x - source.x, enemy.z - source.z) > this.balance.landingRadius) continue
       chain.visited.add(enemy.id)
@@ -531,6 +529,7 @@ export class CombatSystem {
       return
     }
     if (enemy.type !== 'bulldog') this.audioCues.push('enemy.fall')
+    this.dashPush.detach(enemy)
     enemy.removeAt = now + 1.24
     enemy.burnTicks = 0
     setPose(enemy, 'fall', now, 0.26)
@@ -542,6 +541,7 @@ export class CombatSystem {
 
   private impulse(enemy: Enemy, chain: Chain | undefined, depth: number, vx: number, vz: number, now: number,
     length: number, lift = 0) {
+    this.dashPush.detach(enemy)
     enemy.chain = chain
     enemy.depth = depth
     enemy.vx = vx
@@ -559,7 +559,7 @@ export class CombatSystem {
     for (const source of this.enemies) {
       const chain = source.chain
       if (!chain || source.depth >= (chain.kind === 'uppercut' ? this.balance.uppercutChainDepth : this.balance.chainDepth) ||
-        chain.visited.size >= this.chainLimit(chain) ||
+        chain.visited.size >= this.balance.chainTargets ||
         source.since >= now || now >= source.flightUntil) continue
       const body = chain.kind === 'body'
       const heavy = chain.kind === 'uppercut'

@@ -191,7 +191,8 @@ export class CombatView {
 
   private actor(image: Phaser.GameObjects.Image, enemy: Enemy, point: ReturnType<PerspectiveProjector['project']>,
     now: number, counter: boolean, run: ParkRun, focus = false, wall = 0) {
-    const { pose, type } = enemy
+    const { type } = enemy
+    const pose = enemy.dashPushed ? 'dashPushed' : enemy.pose
     const age = Math.max(0, now - enemy.since)
     const moving = pose === 'approach' || pose === 'positioning' || pose === 'retreat'
     const gait = Math.sin(age * (type === 'quick' ? 19 : 13))
@@ -203,7 +204,12 @@ export class CombatView {
     let stretchY = 1 + (moving ? Math.abs(gait) * 0.052 : Math.sin(now * 5 + enemy.id) * 0.019)
     let x = point.x
     let y = point.y - enemy.y * scale * 49
-    if (pose === 'telegraph' || pose === 'laneTell') {
+    if (pose === 'dashPushed') {
+      rotation = -0.14 + (this.reducedMotion.matches ? 0 : Math.sin(now * 17 + enemy.id) * 0.025)
+      stretchY = 0.88
+      stretchX = 1.07
+      y += (this.reducedMotion.matches ? 0 : Math.abs(Math.sin(now * 14 + enemy.id)) * 2) * scale
+    } else if (pose === 'telegraph' || pose === 'laneTell') {
       stretchY *= 1 - Math.min(1, age * 6) * 0.12
       rotation = pose === 'laneTell' ? Math.sign(enemy.destination - enemy.lane) * 0.16 : -0.085
     } else if (pose === 'attack') {

@@ -37,8 +37,6 @@ const gestures: Field<Main>[] = [
   ['superFade', 'Затухание супер-рывка, с', 0.01, 2],
   ['superRecovery', 'Восстановление после супер-рывка, с', 0, 3],
   ['superDamage', 'Урон контакта супер-рывка, ×', 0.05, 2],
-  ['superPush', 'Боковой импульс супер-рывка', 1, 24],
-  ['superTargets', 'Максимум целей супер-рывка', 1, 5],
   ['electricDamage', 'Урон разряда, ×', 0.05, 2], ['electricRadius', 'Радиус разряда', 0.1, 8],
   ['uppercutDamage', 'Урон апперкота, ×', 0.1, 4], ['uppercutForce', 'Импульс вперёд апперкота, ×', 0.1, 4],
   ['uppercutLift', 'Скорость подъёма врага', 1, 12],
@@ -265,6 +263,7 @@ export class BalancePanel {
     this.readout.textContent = [
       `${Math.round(fps)} FPS · seed ${run.seed} · ${run.phase}`,
       `Z ${runner.z.toFixed(1)} · ${runner.speed.toFixed(1)} м/с · полоса ${runner.lane + 2} · XP ${combat.xp}`,
+      `Таран: ${combat.dashPush.members.length} · первое попадание: ${combat.dashPush.directHitSpent ? 'да' : 'нет'}`,
       ...combat.enemies.map(e => `${e.type} #${e.id} ${e.pose} +${(e.z - runner.z).toFixed(1)} ${Math.ceil(e.hp)}HP`),
     ].join('\n')
   }
@@ -317,7 +316,7 @@ export class BalancePanel {
       input.value = String(values[key])
       input.addEventListener('invalid', () => { group.open = true })
       this.options.push(() => {
-        const value = key === 'chainDepth' || key === 'chainTargets' || key === 'superTargets' || key === 'uppercutChainDepth' ? Math.round(input.valueAsNumber) : input.valueAsNumber
+        const value = key === 'chainDepth' || key === 'chainTargets' || key === 'uppercutChainDepth' ? Math.round(input.valueAsNumber) : input.valueAsNumber
         values[key] = value as T[typeof key]
       })
       row.append(text, input)

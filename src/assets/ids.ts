@@ -7,7 +7,7 @@ export type Hand = 'left' | 'right'
 export const enemyPoses = [
   'idle', 'approach', 'positioning', 'laneTell', 'telegraph', 'attack', 'recovery',
   'hit', 'knockback', 'sideFlight', 'stunned', 'airborne', 'fall', 'defeated',
-  'retreat', 'rage', 'finish',
+  'retreat', 'rage', 'finish', 'dashPushed',
 ] as const
 export type EnemyPose = typeof enemyPoses[number]
 

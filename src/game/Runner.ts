@@ -27,6 +27,15 @@ export class Runner {
 
   get superActive() { return this.superAge + 1e-9 < this.balance.superDuration }
   get spawnSpeed() { return this.superActive ? Math.max(this.speed, this.balance.speed * this.balance.superSpeed) : this.speed }
+  get superHandsReady() { return !this.superActive || this.superAge + 1e-9 >= superTiming(this.balance).handsReady }
+
+  // Restrict proposed travel before rendering/contact resolution, without
+  // restarting the speed profile or moving the camera backwards.
+  limitForward(z: number) {
+    this.z = Math.max(this.previousZ, Math.min(this.z, z))
+    this.superSweepZFrom = Math.min(this.superSweepZFrom, this.z)
+    this.superSweepZTo = Math.min(this.superSweepZTo, this.z)
+  }
   canChangeLane(direction: -1 | 1) {
     return this.laneAge + 1e-9 >= this.balance.laneDuration && Math.abs(this.lane + direction) <= 1
   }

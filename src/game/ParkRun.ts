@@ -117,10 +117,12 @@ export class ParkRun {
     if (this.combat.hp <= 0) {
       this.phase = 'defeat'
       this.runner.stopSuper()
+      this.combat.dashPush.release(this.now)
       this.clearInput()
     } else if (this.combat.boss && this.combat.boss.hp <= 0) {
       this.phase = 'finisher'
       this.runner.stopSuper()
+      this.combat.dashPush.release(this.now)
       this.clearInput()
       this.combat.finish(this.runner, this.now)
     } else if (this.phase === 'park') this.checkLevel()
@@ -141,8 +143,11 @@ export class ParkRun {
 
   private beginBoss() {
     this.phase = 'boss'
+    const carried = this.combat.enemies.filter(enemy => enemy.dashPushed && enemy.hp > 0)
     this.combat.enemies.length = 0
-    this.combat.spawn('bulldog', 0, this.runner.z + 24, this.now)
+    for (const enemy of carried) this.combat.enemies.push(enemy)
+    const front = carried.reduce((z, enemy) => Math.max(z, enemy.z + 3), this.runner.z + 24)
+    this.combat.spawn('bulldog', 0, front, this.now)
   }
 
   private support() {
@@ -160,6 +165,8 @@ export class ParkRun {
   }
 
   debugBoss() {
+    this.runner.stopSuper()
+    this.combat.dashPush.release(this.now)
     this.now = Math.max(this.now, this.balance.bossAt)
     this.clearInput()
     this.beginBoss()
@@ -168,6 +175,8 @@ export class ParkRun {
   debugPhase(phase: 1 | 2) {
     const boss = this.combat.boss
     if (!boss || boss.hp <= 0) return
+    this.runner.stopSuper()
+    this.combat.dashPush.release(this.now)
     boss.bossPhase = phase
     boss.hp = boss.maxHp * (phase === 1 ? 1 : 0.48)
     this.nextSupport = Infinity

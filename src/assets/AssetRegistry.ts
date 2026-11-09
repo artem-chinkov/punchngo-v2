@@ -101,7 +101,7 @@ export class AssetRegistry {
     if (key.startsWith('placeholder:') && enemyTypes.some(type => type === id)) {
       let cycle: Cycle | undefined
       if (pose === 'approach' || pose === 'positioning' || pose === 'retreat') cycle = 'stride'
-      else if (pose === 'telegraph' || pose === 'laneTell' || pose === 'rage') cycle = 'guard'
+      else if (pose === 'telegraph' || pose === 'laneTell' || pose === 'rage' || pose === 'dashPushed') cycle = 'guard'
       else if (pose === 'attack') cycle = 'jab'
       else if (pose === 'hit' || pose === 'knockback' || pose === 'sideFlight' || pose === 'stunned' ||
         pose === 'airborne' || pose === 'fall' || pose === 'defeated' || pose === 'finish') cycle = 'flinch'

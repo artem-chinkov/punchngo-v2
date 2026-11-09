@@ -5,7 +5,7 @@ export const upgrades = {
   flurry: { name: 'Шквал ударов', icon: '»', text: '+15% к частоте ударов за уровень.', max: 2, family: 'speed' },
   dash: { name: 'Рывок', icon: '➜', text: '+20% к ускорению от отдельного тапа, до предела скорости.', max: 2, family: 'speed' },
   ram: { name: 'Таран', icon: '◆', text: '+25% к отбрасыванию за уровень.', max: 2, family: 'chain' },
-  wave: { name: 'Ударная волна', icon: '◈', text: 'Супер-рывок задевает врагов и на соседних полосах.', max: 1, family: 'chain' },
+  wave: { name: 'Ударная волна', icon: '◈', text: 'Таран подхватывает врагов и на соседних полосах.', max: 1, family: 'chain' },
   domino: { name: 'Домино', icon: '▥', text: '+25% к урону цепочек за уровень.', max: 2, family: 'chain' },
   ricochet: { name: 'Рикошет', icon: '↗', text: 'Летящий враг доворачивает к соседней цели.', max: 1, family: 'chain' },
   uppercut: { name: 'Сокрушительный апперкот', icon: '⇡', text: 'При приземлении подброшенный враг создаёт ударную волну.', max: 1, family: 'power' },

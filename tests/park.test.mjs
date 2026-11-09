@@ -218,14 +218,16 @@ test('super dash integrates a capped 1.2 s speed profile, works without a target
   assert.equal(run.special('superDash'), true)
   assert.equal(combat.strike, undefined)
   assert.equal(runner.spawnSpeed, balance.speed * 2.8)
-  assert.equal(run.tap(), true)
-  assert.equal(combat.strike.kind, 'punch')
+  assert.equal(run.tap(), false)
+  assert.equal(combat.strike, undefined)
   assert.equal(runner.dash, 0)
   assert.equal(run.special('uppercut'), false)
   runner.advance(0.05)
   assert.equal(runner.speed, balance.speed)
   runner.advance(0.15)
   assert.ok(Math.abs(runner.speed - balance.speed * 2.8) < 1e-8)
+  assert.equal(run.tap(), true)
+  assert.equal(combat.strike.kind, 'punch')
   assert.equal(run.swipe(1), true)
   for (let i = 0; i < 60; i++) {
     runner.launchDash(2)
@@ -247,7 +249,7 @@ test('super dash integrates a capped 1.2 s speed profile, works without a target
   assert.equal(run.special('superDash'), true)
 })
 
-test('super dash sweeps through crossings, charges only its own damage and leaves active attacks dangerous', () => {
+test('super dash sweeps contacts once and keeps the survivor ahead without flight or contact damage', () => {
   const run = newRun()
   const { runner, combat, balance } = run
   balance.chainDepth = 0
@@ -256,14 +258,13 @@ test('super dash sweeps through crossings, charges only its own damage and leave
   assert.equal(combat.special(runner, 0, 'superDash'), true)
   runner.advance(0.35)
   combat.update(runner, 0.35, 0.35)
-  assert.ok(runner.z > target.z + 0.6)
+  assert.ok(target.z - runner.z > 0.55)
   assert.equal(target.hp, 100 - balance.damage * balance.superDamage)
   assert.equal(adjacent.hp, 100)
   assert.equal(combat.hp, balance.hp)
-  assert.ok(Math.abs(target.vx) > 0)
-  // The same target cannot be hit twice even if it overlaps another swept step.
-  target.z = runner.z + 0.3
-  target.vx = target.vz = 0
+  assert.equal(target.dashPushed, true)
+  assert.equal(target.chain, undefined)
+  assert.equal(target.vx, 0)
   runner.advance(dt)
   combat.update(runner, 0.35 + dt, dt)
   assert.deepEqual(events(combat, 'dashImpact').map(event => event.enemy), [target.id])
@@ -275,19 +276,29 @@ test('super dash sweeps through crossings, charges only its own damage and leave
   duel.combat.special(duel.runner, 0, 'superDash')
   duel.runner.advance(0.14)
   duel.combat.update(duel.runner, 0.14, 0.14)
-  assert.ok(duel.combat.hp < duel.balance.hp)
+  assert.equal(threat.dashPushed, true)
+  assert.equal(duel.combat.hp, duel.balance.hp)
 })
 
-test('super dash never exceeds its combined target limit', () => {
+test('super dash collects twelve enemies without inheriting projectile target/depth limits', () => {
   const run = newRun()
   const { runner, combat, balance } = run
-  const enemies = [2, 3, 4, 5, 6, 7].map(z => place(run, 'thug', 0, z, 100))
+  balance.chainTargets = 1
+  balance.chainDepth = 0
+  const enemies = Array.from({ length: 12 }, (_, i) => place(run, 'thug', 0, 3 + i, 100))
   combat.special(runner, 0, 'superDash')
-  for (let i = 1; i <= 72; i++) { runner.advance(dt); combat.update(runner, i * dt, dt, true) }
-  const ids = events(combat, 'dashImpact').concat(events(combat, 'chain')).map(e => e.enemy)
-  assert.equal(ids.length, balance.superTargets)
-  assert.equal(new Set(ids).size, ids.length)
-  assert.equal(enemies.filter(e => e.hp < 100).length, balance.superTargets)
+  for (let i = 1; i <= 60; i++) {
+    runner.advance(dt)
+    combat.update(runner, i * dt, dt, true)
+    const group = combat.dashPush.members
+    for (let j = 1; j < group.length; j++) assert.ok(group[j].z - group[j - 1].z >= 0.8 - 1e-8)
+  }
+  assert.deepEqual(combat.dashPush.members.map(e => e.id), enemies.map(e => e.id))
+  assert.deepEqual(events(combat, 'dashImpact').map(e => e.enemy), [enemies[0].id])
+  assert.equal(enemies.filter(e => e.hp < 100).length, 1)
+  assert.equal(events(combat, 'chain').length, 0)
+  for (let i = 61; i <= 72; i++) { runner.advance(dt); combat.update(runner, i * dt, dt, true) }
+  assert.ok(enemies.every(e => combat.enemies.includes(e) && e.z > runner.z && !e.dashPushed && e.vz === 0))
 })
 
 test('side swipe hits each of two lanes once; another swipe during travel or off the road has no effect', () => {
@@ -423,8 +434,8 @@ test('outer-lane brute resists the impulse but leaves the swept path inside the 
   assert.ok(velocities[1] < velocities[0])
 })
 
-test('at high dash speed the prep uses body contact, the first powered hit wins, and the cap falls back to a shove', () => {
-  const run = newRun(1, { ...balance(), speed: 20, superSpeed: 5, superTargets: 1, chainDepth: 0, bossAt: 7 })
+test('at high dash speed preparation uses body contact and every powered survivor joins without shoving', () => {
+  const run = newRun(1, { ...balance(), speed: 20, superSpeed: 5, chainDepth: 0, bossAt: 7 })
   run.start()
   const before = place(run, 'thug', 0, 0.9)
   const struck = place(run, 'thug', 0, 3.4)
@@ -433,19 +444,21 @@ test('at high dash speed the prep uses body contact, the first powered hit wins,
   run.update(0.18)
   const impacts = run.combat.events.filter(event => event.kind === 'bodyContact' || event.kind === 'dashImpact')
   assert.deepEqual(impacts.map(event => [event.kind, event.enemy]), [
-    ['bodyContact', before.id], ['dashImpact', struck.id], ['bodyContact', overflow.id],
+    ['bodyContact', before.id], ['dashImpact', struck.id],
   ])
   assert.equal(struck.hp, 108)
   assert.equal(overflow.hp, 120)
   assert.equal(before.hp, 120)
   assert.equal(run.combat.hp, 95)
   assert.equal(run.runner.speed, 100)
-  for (const enemy of [before, struck, overflow]) {
-    assert.ok(Math.abs(enemy.x - run.runner.x) >= 0.86)
+  assert.ok(Math.abs(before.x - run.runner.x) >= 0.86)
+  for (const enemy of [struck, overflow]) {
+    assert.ok(enemy.z > run.runner.z)
+    assert.equal(enemy.dashPushed, true)
     assert.ok(run.combat.enemies.includes(enemy))
   }
   play(run, 0.55, true)
-  assert.equal(run.combat.enemies.length, 0)
+  assert.ok([struck, overflow].every(e => run.combat.enemies.includes(e) && e.z > run.runner.z))
   assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], [0, 0, 0])
 })
 
@@ -572,7 +585,7 @@ test('XP is one-time, level choices pause all movement and time, and runs start 
   assert.equal(fresh.combat.build.rank(id), 0)
 })
 
-test('a dash that only knocks a full-health enemy aside gives no XP, but a dash knockout can level up', () => {
+test('a dash survivor remains ahead without XP, while a first-contact knockout can level up', () => {
   const run = newRun(1, { ...balance(), bossAt: 7 })
   run.start()
   const enemy = run.combat.spawn('thug', 0, 2, run.now)
@@ -580,7 +593,8 @@ test('a dash that only knocks a full-health enemy aside gives no XP, but a dash 
   play(run, 1.2, true)
   assert.deepEqual(events(run.combat, 'dashImpact').map(event => event.enemy), [enemy.id])
   assert.equal(enemy.hp, 21) // 33 HP minus 12 dash damage.
-  assert.equal(run.combat.enemies.includes(enemy), false)
+  assert.equal(run.combat.enemies.includes(enemy), true)
+  assert.ok(enemy.z > run.runner.z)
   assert.deepEqual([run.combat.xp, run.combat.kills, run.combat.score], [0, 0, 0])
 
   play(run, 0.85, true)
@@ -700,7 +714,7 @@ test('all upgrade ranks cap correctly; healing, power, speed, dash, chain and pr
   assert.ok(boss.vz > match.balance.knockback)
 })
 
-test('dash wave expands to adjacent lanes and electricity discharges only once in the shared budget', () => {
+test('dash wave captures adjacent lanes without damage and electricity discharges once separately', () => {
   const run = newRun()
   const { combat, runner } = run
   run.balance.chainDepth = 0
@@ -710,10 +724,12 @@ test('dash wave expands to adjacent lanes and electricity discharges only once i
   const right = place(run, 'thug', 1, 3.0, 400)
   combat.special(runner, 0, 'superDash')
   for (let i = 1; i <= 26; i++) { runner.advance(dt); combat.update(runner, i * dt, dt, true) }
-  assert.ok([center, left, right].every(enemy => enemy.hp < 400))
+  assert.ok(center.hp < 400 && left.hp < 400)
+  assert.equal(right.hp, 400)
+  assert.equal(right.dashPushed, true)
   assert.equal(events(combat, 'electric').length, 1)
   assert.equal(events(combat, 'electric')[0].enemy, left.id)
-  assert.deepEqual(events(combat, 'dashImpact').map(e => e.enemy), [center.id, right.id])
+  assert.deepEqual(events(combat, 'dashImpact').map(e => e.enemy), [center.id])
   assert.equal(events(combat, 'fire').filter(e => e.enemy === center.id).length, 1)
 })
 
@@ -1193,6 +1209,7 @@ test('move audio reports one dash start, one uppercut windup and one actual heav
   assert.equal(combat.special(runner, 0, 'superDash'), true)
   assert.equal(combat.special(runner, 0.1, 'superDash'), false)
   assert.deepEqual(combat.audioCues, ['dash.start'])
+  runner.advance(2)
   place(run, 'thug', 0, 2, 200)
   assert.equal(combat.special(runner, 2, 'uppercut'), true)
   assert.deepEqual(combat.audioCues, ['dash.start', 'uppercut.windup'])
@@ -1449,6 +1466,359 @@ test('director leaves extra lookahead even during super dash preparation', async
   })
   assert.ok(distances[1] > distances[0] + 15)
   assert.ok(distances[1] / (defaultBalance.speed * defaultBalance.superSpeed) >= 2)
+})
+
+test('four ram members keep HP and IDs; only the first capture is a hit or a combo', () => {
+  const run = newRun()
+  const { runner, combat } = run
+  const group = [3, 4.4, 6.2, 8.5].map((z, i) => place(run, i === 2 ? 'brute' : 'thug', 0, z, 100))
+  combat.special(runner, 0, 'superDash')
+  for (let i = 1; i <= 55; i++) { runner.advance(dt); combat.update(runner, i * dt, dt) }
+  assert.deepEqual(combat.dashPush.members, group)
+  assert.deepEqual(group.map(e => e.hp), [88, 100, 100, 100])
+  assert.equal(combat.combo, 1)
+  assert.deepEqual([combat.kills, combat.xp, combat.score], [0, 0, 0])
+  assert.ok(group.every(e => e.dashPushed && !e.chain && e.vx === 0 && e.vz === 0 && e.pose === 'dashPushed'))
+})
+
+test('a ram front can capture outside the hero sweep, including several contacts in one step', () => {
+  const run = newRun()
+  const first = place(run, 'thug', 0, 3, 100)
+  const following = [4, 5, 6, 7].map(z => place(run, 'thug', 0, z, 100))
+  run.combat.special(run.runner, 0, 'superDash')
+  run.runner.advance(0.25)
+  run.combat.update(run.runner, 0.25, 0.25)
+  // The last enemy is beyond the hero's maximum contact distance at this time.
+  assert.ok(following.at(-1).z - run.runner.z > 2.3)
+  assert.deepEqual(run.combat.dashPush.members, [first, ...following])
+  assert.deepEqual([first, ...following].map(e => e.hp), [88, 100, 100, 100, 100])
+  assert.equal(events(run.combat, 'bodyContact').length, 0)
+})
+
+test('a lethal first ram contact spends its only hit and does not block further captures', () => {
+  const run = newRun()
+  const dead = place(run, 'thug', 0, 3, 12)
+  const next = place(run, 'thug', 0, 4, 100)
+  run.combat.special(run.runner, 0, 'superDash')
+  for (let i = 1; i <= 35; i++) { run.runner.advance(dt); run.combat.update(run.runner, i * dt, dt) }
+  assert.equal(dead.hp, 0)
+  assert.equal(dead.dashPushed, false)
+  assert.equal(next.hp, 100)
+  assert.deepEqual(run.combat.dashPush.members, [next])
+  assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], [1, 16, 100])
+  assert.deepEqual(events(run.combat, 'dashImpact').map(e => e.enemy), [dead.id])
+})
+
+test('tap and hold damage pushed targets at normal cadence; KO preserves the remaining chain without a jump', () => {
+  const run = newRun()
+  run.start()
+  const first = place(run, 'thug', 0, 3, 60)
+  const second = place(run, 'thug', 0, 4, 100)
+  const third = place(run, 'brute', 0, 5, 150)
+  run.special('superDash')
+  play(run, 0.3)
+  assert.equal(run.tap(), true)
+  assert.equal(first.hp, 24)
+  assert.equal(first.dashPushed, true)
+  assert.equal(first.chain, undefined)
+  assert.equal(run.tap(), false)
+  for (let i = 0; i < 14; i++) run.update(dt, false, { dash: false })
+  assert.equal(first.hp, 24)
+  const z = second.z
+  run.update(dt, false, { dash: false })
+  assert.equal(first.hp, 0)
+  assert.equal(first.dashPushed, false)
+  assert.equal(first.chain, undefined)
+  assert.deepEqual(run.combat.dashPush.members, [second, third])
+  assert.equal(run.combat.kills, 1)
+  assert.equal(run.combat.xp, 16)
+  assert.ok(second.z >= z && second.z - z <= run.runner.speed * dt + 1e-8)
+  assert.equal(run.tap(), false)
+  for (let i = 0; i < 15; i++) run.update(dt, false, { dash: false })
+  assert.equal(second.hp, 76)
+  assert.deepEqual([run.combat.kills, run.combat.xp], [1, 16])
+})
+
+test('side swipe ejects only its actual target and remaining ram members follow a smooth lane change', () => {
+  const run = newRun()
+  run.start()
+  const group = [3, 4, 5, 6].map(z => place(run, 'thug', 0, z, 100))
+  run.special('superDash')
+  play(run, 0.35)
+  assert.equal(run.swipe(1), true)
+  assert.equal(group[0].dashPushed, false)
+  assert.equal(group[0].hp, 100 - 12 - run.balance.damage * run.balance.sideDamage)
+  assert.ok(group[0].vx > 0 && group[0].chain)
+  for (let i = 0; i < 12; i++) {
+    const positions = group.slice(1).map(e => ({ x: e.x, z: e.z }))
+    run.update(dt, true)
+    for (let j = 1; j < group.length; j++) {
+      if (!group[j].dashPushed) continue // A real flying strike may hit another participant.
+      assert.ok(Math.abs(group[j].x - positions[j - 1].x) <= 0.35)
+      assert.ok(group[j].z > run.runner.z)
+    }
+  }
+  assert.ok(run.combat.dashPush.members.length > 0)
+  assert.ok(run.combat.dashPush.members.every(e => Math.abs(e.x - run.runner.x) < 0.01))
+  assert.equal(events(run.combat, 'dashImpact').length, 1)
+})
+
+test('early taps are dropped, holding unlocks after thrust, and forbidden specials never queue', () => {
+  const run = newRun()
+  run.start()
+  const enemy = place(run, 'thug', 0, 3, 400)
+  run.special('superDash')
+  assert.equal(run.tap(), false)
+  assert.equal(run.swipe(1), false)
+  assert.equal(run.special('uppercut'), false)
+  assert.equal(run.special('superDash'), false)
+  for (let i = 0; i < 11; i++) assert.equal(run.update(dt, true, { dash: true }), false)
+  assert.equal(enemy.hp, 388)
+  assert.equal(run.update(dt, true, { dash: true }), true)
+  assert.equal(enemy.hp, 364)
+  assert.equal(run.runner.dash, 0)
+  play(run, 2.1, true)
+  assert.equal(run.combat.uppercutStrike, undefined)
+  assert.equal(events(run.combat, 'air').length, 0)
+  assert.equal(events(run.combat, 'dashImpact').length, 1)
+})
+
+test('release preserves coordinates and HP, removes no survivors and restarts full attack warnings', () => {
+  const run = newRun()
+  const group = [3, 4, 5, 6].map(z => place(run, 'thug', 0, z, 100))
+  run.combat.special(run.runner, 0, 'superDash')
+  for (let i = 1; i <= 71; i++) { run.runner.advance(dt); run.combat.update(run.runner, i * dt, dt) }
+  const before = group.map(e => ({ x: e.x, z: e.z, hp: e.hp }))
+  const awards = [run.combat.xp, run.combat.score, run.combat.kills, run.combat.combo]
+  const eventCount = run.combat.events.length
+  run.runner.advance(dt)
+  run.combat.update(run.runner, 1.2, dt)
+  assert.equal(run.combat.dashPush.active, false)
+  assert.equal(run.combat.dashPush.members.length, 0)
+  for (let i = 0; i < group.length; i++) {
+    const enemy = group[i]
+    assert.equal(enemy.hp, before[i].hp)
+    assert.equal(enemy.x, before[i].x)
+    assert.ok(enemy.z - before[i].z >= 0 && enemy.z - before[i].z <= run.balance.speed * dt + 0.01)
+    assert.ok(enemy.z - run.runner.z >= 2.3 - 1e-8)
+    assert.equal(enemy.dashPushed, false)
+    assert.equal(enemy.pose, 'approach')
+    assert.equal(enemy.flightUntil, 0)
+    assert.deepEqual([enemy.vx, enemy.vz], [0, 0])
+    assert.ok(run.combat.enemies.includes(enemy))
+  }
+  assert.deepEqual([run.combat.xp, run.combat.score, run.combat.kills, run.combat.combo], awards)
+  assert.equal(run.combat.events.length, eventCount)
+  assert.equal(run.combat.invulnerableUntil, 0)
+  run.runner.advance(dt)
+  run.combat.update(run.runner, 1.2 + dt, dt)
+  assert.equal(group[0].pose, 'telegraph')
+  assert.ok(Math.abs(group[0].until - (1.2 + dt + run.balance.enemies.thug.windup)) < 1e-8)
+  assert.equal(run.combat.hp, run.balance.hp)
+})
+
+test('wave captures converge into one spaced row without moving existing members on join', () => {
+  const run = newRun()
+  run.combat.take('wave')
+  const group = [-1, 0, 1].map(lane => place(run, 'thug', lane, 3, 100))
+  run.combat.special(run.runner, 0, 'superDash')
+  for (let i = 1; i <= 60; i++) {
+    const previous = group.map(e => ({ x: e.x, z: e.z }))
+    run.runner.advance(dt)
+    run.combat.update(run.runner, i * dt, dt)
+    for (let j = 0; j < group.length; j++) {
+      assert.ok(Math.abs(group[j].x - previous[j].x) <= 5.25 * dt + 1e-8)
+      assert.ok(Math.abs(group[j].z - previous[j].z) <= (run.balance.speed * 2.8 + 6) * dt + 1e-8)
+    }
+  }
+  assert.equal(run.combat.dashPush.members.length, 3)
+  assert.ok(group.every(e => Math.abs(e.x - run.runner.x) < 1e-8))
+  const sorted = [...group].sort((a, b) => a.z - b.z)
+  for (let i = 1; i < sorted.length; i++) assert.ok(sorted[i].z - sorted[i - 1].z >= 0.8 - 1e-8)
+  assert.deepEqual(group.map(e => e.hp), [88, 100, 100])
+})
+
+test('Bulldog blocks ram travel across lanes, consumes at most one hit and keeps his real attack', () => {
+  const run = newRun()
+  run.debugBoss()
+  const boss = run.combat.boss
+  boss.z = run.runner.z + 3
+  const start = run.now
+  setPose(boss, 'telegraph', start, 0.7)
+  run.special('superDash')
+  play(run, 0.5)
+  assert.equal(boss.dashPushed, false)
+  assert.equal(boss.hp, boss.maxHp - 12)
+  assert.equal(run.combat.dashPush.members.length, 0)
+  assert.ok(boss.z - run.runner.z >= 2.3 - 1e-8)
+  const stopped = run.runner.z
+  assert.equal(run.swipe(-1), true)
+  play(run, 0.1)
+  assert.ok(Math.abs(run.runner.z - stopped) < 1e-8)
+  assert.equal(run.runner.superActive, true)
+  assert.equal(boss.until, start + 0.7)
+  play(run, 0.12)
+  assert.ok(run.combat.hp < run.balance.hp)
+  assert.ok(boss.z > run.runner.z)
+  assert.equal(events(run.combat, 'dashImpact').length, 1)
+})
+
+test('a ram train stops at Bulldog without a second hit, and counters still interrupt the boss', () => {
+  const run = newRun()
+  run.debugBoss()
+  const boss = run.combat.boss
+  boss.z = run.runner.z + 9
+  setPose(boss, 'telegraph', run.now, 1)
+  const group = [3, 4, 5, 6].map(z => place(run, 'thug', 0, z, 100))
+  run.special('superDash')
+  play(run, 0.6, true)
+  assert.deepEqual(run.combat.dashPush.members, group)
+  assert.equal(boss.hp, boss.maxHp)
+  assert.ok(boss.z - group.at(-1).z >= 0.9 - 1e-8)
+  assert.ok(group[0].z - run.runner.z >= 2.3 - 1e-8)
+  const z = run.runner.z
+  play(run, 0.1, true)
+  assert.ok(Math.abs(run.runner.z - z) < 1e-8)
+
+  // A short train still allows the normal manual boss counter.
+  const duel = newRun()
+  duel.debugBoss()
+  const target = duel.combat.boss
+  target.z = duel.runner.z + 2.7
+  setPose(target, 'telegraph', duel.now, 0.6)
+  duel.special('superDash')
+  play(duel, 0.45, true)
+  assert.equal(duel.tap(), true)
+  assert.equal(target.pose, 'stunned')
+  assert.equal(duel.runner.superActive, true)
+})
+
+test('defeat, victory and DEV transitions clear push ownership; upgrade pauses preserve it', () => {
+  for (const ending of ['defeat', 'victory', 'debugBoss', 'debugPhase', 'upgrade']) {
+    const run = newRun()
+    if (ending === 'victory' || ending === 'debugPhase') run.debugBoss()
+    else run.start()
+    const enemy = place(run, 'thug', 0, 3, 100)
+    run.special('superDash')
+    play(run, 0.25, true)
+    assert.equal(enemy.dashPushed, true)
+    if (ending === 'defeat') run.combat.hp = 0
+    if (ending === 'victory') run.combat.boss.hp = 0
+    if (ending === 'debugBoss') run.debugBoss()
+    if (ending === 'debugPhase') run.debugPhase(2)
+    if (ending === 'upgrade') run.combat.xp = levelXP(2)
+    run.update(dt, true)
+    if (ending === 'upgrade') {
+      assert.equal(run.phase, 'upgrade')
+      const snapshot = [enemy.x, enemy.z, run.runner.z, run.runner.superAge]
+      run.update(1, true)
+      assert.deepEqual([enemy.x, enemy.z, run.runner.z, run.runner.superAge], snapshot)
+      run.choose(run.offer[0])
+      assert.equal(enemy.dashPushed, true)
+    } else {
+      assert.equal(enemy.dashPushed, false, ending)
+      assert.equal(run.combat.dashPush.members.length, 0, ending)
+      assert.equal(run.runner.superActive, false, ending)
+    }
+  }
+})
+
+test('boss appearance preserves the active train and places Bulldog beyond its front', () => {
+  const run = newRun(1, { ...balance(), bossAt: 0.5 })
+  run.start()
+  const group = Array.from({ length: 12 }, (_, i) => place(run, 'thug', 0, 3 + i, 100))
+  run.special('superDash')
+  play(run, 0.7, true)
+  assert.equal(run.phase, 'boss')
+  assert.deepEqual(run.combat.dashPush.members, group)
+  assert.ok(group.every(e => run.combat.enemies.includes(e)))
+  assert.ok(run.combat.boss.z > group.at(-1).z)
+})
+
+test('upgrades do not turn passive ram transport into damage or a reward loop', () => {
+  const run = newRun()
+  run.combat.hp -= 30
+  for (const id of upgradeIds) assert.equal(run.combat.take(id), true)
+  const group = Array.from({ length: 12 }, (_, i) => place(run, 'brute', 0, 3 + i, 500))
+  run.combat.special(run.runner, 0, 'superDash')
+  for (let i = 1; i <= 72; i++) { run.runner.advance(dt); run.combat.update(run.runner, i * dt, dt, true) }
+  assert.equal(events(run.combat, 'dashImpact').length, 1)
+  assert.equal(events(run.combat, 'electric').length, 1)
+  assert.ok(events(run.combat, 'fire').length <= 2)
+  assert.equal(events(run.combat, 'air').length, 0)
+  assert.equal(events(run.combat, 'landing').length, 0)
+  assert.deepEqual([run.combat.kills, run.combat.xp], [0, 0])
+  assert.ok(group.every(e => e.hp > 0 && run.combat.enemies.includes(e)))
+  assert.equal(run.combat.dashPush.members.length, 0)
+})
+
+test('ram trajectories, damage and release match at 30, 60 and 120 rendered FPS', async () => {
+  const { FrameClock } = await load('game/FrameClock')
+  const simulate = fps => {
+    const run = newRun()
+    run.start()
+    const group = Array.from({ length: 12 }, (_, i) => place(run, 'thug', 0, 3 + i, 100))
+    run.special('superDash')
+    const clock = new FrameClock()
+    for (let i = 0; i < fps * 1.2; i++) clock.frame(1000 / fps, 1, step => { run.update(step, true); return true })
+    return { z: run.runner.z, group: group.map(e => [e.id, e.x, e.z, e.hp, e.dashPushed]),
+      hit: events(run.combat, 'dashImpact'), xp: run.combat.xp, score: run.combat.score }
+  }
+  assert.deepEqual(simulate(30), simulate(60))
+  assert.deepEqual(simulate(120), simulate(60))
+})
+
+test('ram remains stable with direct 30/60/120 Hz physics steps and a step crossing its endpoint', () => {
+  const simulate = hz => {
+    const run = newRun()
+    const group = Array.from({ length: 12 }, (_, i) => place(run, 'thug', 0, 3 + i, 100))
+    run.combat.special(run.runner, 0, 'superDash')
+    for (let i = 1; i <= hz * 1.2; i++) {
+      run.runner.advance(1 / hz)
+      run.combat.update(run.runner, i / hz, 1 / hz)
+      for (let j = 1; j < run.combat.dashPush.members.length; j++) {
+        const chain = run.combat.dashPush.members
+        assert.ok(chain[j].z - chain[j - 1].z >= 0.8 - 1e-8)
+      }
+    }
+    assert.ok(group.every(e => e.z > run.runner.z + 0.55 && run.combat.enemies.includes(e) && !e.dashPushed))
+    assert.deepEqual(group.map(e => e.hp), [88, ...Array(11).fill(100)])
+    assert.equal(events(run.combat, 'dashImpact').length, 1)
+    assert.equal(run.combat.hp, run.balance.hp)
+    return { z: run.runner.z, gaps: group.map(e => e.z - run.runner.z) }
+  }
+  const base = simulate(60)
+  for (const hz of [30, 120]) {
+    const result = simulate(hz)
+    assert.ok(Math.abs(result.z - base.z) < 1e-8)
+    result.gaps.forEach((gap, i) => assert.ok(Math.abs(gap - base.gaps[i]) < 0.04))
+  }
+  const run = newRun()
+  const enemy = place(run, 'thug', 0, 3, 100)
+  run.combat.special(run.runner, 0, 'superDash')
+  run.runner.advance(1.19)
+  run.combat.update(run.runner, 1.19, 1.19)
+  run.runner.advance(0.03)
+  run.combat.update(run.runner, 1.22, 0.03)
+  assert.ok(enemy.z - run.runner.z > 2.1)
+  assert.equal(enemy.hp, 88)
+  assert.equal(enemy.dashPushed, false)
+  assert.equal(run.combat.hp, run.balance.hp)
+})
+
+test('burning KO detaches a pushed victim once and promotes the next live target', () => {
+  const run = newRun()
+  run.combat.take('fire')
+  const first = place(run, 'thug', 0, 3, 14)
+  const next = place(run, 'thug', 0, 4, 100)
+  run.combat.special(run.runner, 0, 'superDash')
+  for (let i = 1; i <= 60; i++) { run.runner.advance(dt); run.combat.update(run.runner, i * dt, dt) }
+  assert.equal(first.hp, 0)
+  assert.equal(first.dashPushed, false)
+  assert.deepEqual(run.combat.dashPush.members, [next])
+  assert.equal(next.hp, 100)
+  assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], [1, 16, 100])
+  assert.equal(events(run.combat, 'chain').length, 0)
 })
 
 test('swept ricochet needs simultaneous body height and planar contact', async () => {
