@@ -47,3 +47,12 @@ test('boss music changes on the next 168 BPM bar, including the end of the loop'
   assert.equal(nextMusicBar(bar + 0.01, 168), 2 * bar)
   assert.equal(nextMusicBar(32 * bar - 0.01, 168), 32 * bar)
 })
+
+test('jab cue reuses only light samples at a lower volume without new audio assets', async () => {
+  const manifest = JSON.parse(await read('../src/audio/audio_manifest.json'))
+  const normal = manifest.sfx.find(item => item.key === 'punch.hit')
+  const jab = manifest.sfx.find(item => item.key === 'punch.jab_hit')
+  assert.deepEqual(jab.files, normal.files)
+  assert.ok(jab.volume > 0 && jab.volume < normal.volume)
+  assert.equal(manifest.sfx.filter(item => item.key === 'punch.jab_hit').length, 1)
+})

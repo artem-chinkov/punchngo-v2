@@ -10,6 +10,12 @@ import { DashPush } from './DashPush'
 
 export type Effect = 'hit' | 'dashImpact' | 'ricochet' | 'counter' | 'ideal' | 'chain' | 'air' | 'wave' | 'electric' |
   'fire' | 'hurt' | 'miss' | 'rage' | 'finish' | 'level' | 'side' | 'landing' | 'bodyContact' | 'bodyShove'
+export type PunchSource = 'tap' | 'holdFirst' | 'holdRepeat'
+interface AttackFeedback {
+  punchSource?: PunchSource
+  attackKind?: Strike['kind']
+  hand?: Hand
+}
 type Side = -1 | 1
 type Impact = { x: number; z: number; direction?: Side }
 type Crossing = { enemy: Enemy; time: number }
@@ -18,7 +24,7 @@ const bodyBehind = 0.18
 const bodyAhead = 0.55
 const bodyHeight = 0.8
 const bodyClearance = 0.86
-export interface CombatEvent {
+export interface CombatEvent extends AttackFeedback {
   kind: Effect
   x: number
   z: number
@@ -34,6 +40,8 @@ export interface Strike {
   at: number
   aim: number
   hit: boolean
+  punchSource?: PunchSource
+  ideal?: boolean
 }
 export type Special = 'superDash' | 'uppercut'
 export type LearnedAction = 'punch' | 'side' | Special
@@ -117,7 +125,7 @@ export class CombatSystem {
     }
     if (this.punchReady(now)) {
       this.pendingTap = undefined
-      this.punch(runner, now, this.build.acceleration)
+      this.punch(runner, now, 'tap', this.build.acceleration)
       return true
     }
     if (this.nextPunch - now <= this.balance.inputBuffer) this.pendingTap = now
@@ -127,7 +135,7 @@ export class CombatSystem {
   holdAttack(runner: Runner, now: number, dash = false) {
     if (!this.canStrike() || !runner.superHandsReady || this.pendingTap !== undefined || !this.punchReady(now) ||
       now < this.holdBlockedUntil) return false
-    this.punch(runner, now, dash ? 1 : undefined)
+    this.punch(runner, now, dash ? 'holdFirst' : 'holdRepeat', dash ? 1 : undefined)
     return true
   }
 
@@ -323,7 +331,8 @@ export class CombatSystem {
     if (second) chain.visited.add(second.id)
     this.audioCues.push('punch.hit')
     const strike = (enemy: Enemy) => {
-      this.hit(enemy, this.baseDamage * this.balance.sideDamage, now, 'side')
+      this.hit(enemy, this.baseDamage * this.balance.sideDamage, now, 'side', undefined, undefined,
+        { attackKind: this.strike!.kind, hand: this.strike!.hand })
       if (this.canDisplace(enemy)) this.impulse(enemy, chain, 0, direction * this.balance.sideImpulse,
         this.force * this.balance.sideForce, now, 0.60)
     }
@@ -365,7 +374,7 @@ export class CombatSystem {
     if (this.pendingTap !== undefined && this.punchReady(now)) {
       const at = this.pendingTap
       this.pendingTap = undefined
-      if (runner.superHandsReady && now - at <= this.balance.inputBuffer + dt) this.punch(runner, now, this.build.acceleration)
+      if (runner.superHandsReady && now - at <= this.balance.inputBuffer + dt) this.punch(runner, now, 'tap', this.build.acceleration)
     }
     if (!this.canStrike()) return
 
@@ -439,26 +448,29 @@ export class CombatSystem {
     }
   }
 
-  private beginStrike(runner: Runner, now: number, kind: Strike['kind'], target?: Enemy) {
+  private beginStrike(runner: Runner, now: number, kind: Strike['kind'], target?: Enemy, punchSource?: PunchSource) {
     const hand = kind === 'sideLeft' ? 'left' : kind === 'sideRight' ? 'right' : this.hand
-    this.strike = { hand, kind, at: now, aim: target ? target.x - runner.x : 0, hit: !!target }
+    this.strike = { hand, kind, at: now, aim: target ? target.x - runner.x : 0, hit: !!target, punchSource }
     if (kind === 'punch' || kind === 'counter') this.hand = this.hand === 'left' ? 'right' : 'left'
     if (!target) {
       this.audioCues.push('punch.miss')
-      this.emit('miss', runner.x, runner.z + 1.8)
+      this.events.push({ kind: 'miss', x: runner.x, z: runner.z + 1.8, attackKind: kind, punchSource, hand })
     }
   }
 
-  private punch(runner: Runner, now: number, dash?: number) {
+  private punch(runner: Runner, now: number, source: PunchSource, dash?: number) {
     const target = this.pickTarget(runner)
     this.nextPunch = now + this.punchInterval
     if (dash !== undefined) runner.launchDash(dash)
     this.learnedActions.add('punch')
-    this.beginStrike(runner, now, 'punch', target)
+    this.beginStrike(runner, now, 'punch', target, source)
     if (!target) return
-    this.audioCues.push(target.type === 'brute' || target.type === 'bulldog' ? 'punch.heavy_hit' : 'punch.hit')
+    this.audioCues.push(source === 'holdRepeat' ? 'punch.jab_hit' :
+      target.type === 'brute' || target.type === 'bulldog' ? 'punch.heavy_hit' : 'punch.hit')
     const pushed = target.dashPushed
-    this.hit(target, this.baseDamage, now, 'hit')
+    const repeat = Number.isFinite(this.balance.holdRepeatDamage) ? Math.max(0.5, Math.min(1, this.balance.holdRepeatDamage)) : 0.8
+    this.hit(target, this.baseDamage * (source === 'holdRepeat' ? repeat : 1), now, 'hit', undefined, undefined,
+      { punchSource: source, attackKind: 'punch', hand: this.strike!.hand })
     if (!pushed && this.canDisplace(target)) this.impulse(target, { visited: new Set([target.id]) }, 0, 0, this.force, now, 0.66)
   }
 
@@ -467,13 +479,15 @@ export class CombatSystem {
     this.nextPunch = now + this.punchInterval
     runner.launchDash(this.build.acceleration)
     this.beginStrike(runner, now, 'counter', target)
+    this.strike!.ideal = ideal
     const points = ideal ? this.balance.idealScore : this.balance.counterScore
     this.counters++
     if (ideal) this.perfect++
     this.score += points
     this.audioCues.push(ideal ? 'counter.perfect' : 'counter.success')
     this.hit(target, this.baseDamage * (ideal ? this.balance.idealDamage : this.balance.counterDamage) *
-      this.build.counterDamage, now, ideal ? 'ideal' : 'counter', points)
+      this.build.counterDamage, now, ideal ? 'ideal' : 'counter', points, undefined,
+      { attackKind: 'counter', hand: this.strike!.hand })
     this.impulse(target, { visited: new Set([target.id]) }, 0, 0, this.force * (ideal ? 1.48 : 1.24), now, 0.66)
     if (target.hp <= 0) return
     const boss = target.type === 'bulldog'
@@ -640,13 +654,13 @@ export class CombatSystem {
     return target
   }
 
-  private hit(enemy: Enemy, damage: number, now: number, kind: Effect, points?: number, impact?: Impact) {
+  private hit(enemy: Enemy, damage: number, now: number, kind: Effect, points?: number, impact?: Impact, feedback?: AttackFeedback) {
     const multiplier = this.multiplier
     this.combo++
     if (this.multiplier > multiplier) this.audioCues.push('combo.milestone')
     this.comboLeft = this.balance.comboGrace
     this.bestCombo = Math.max(this.bestCombo, this.combo)
-    this.events.push({ kind, x: enemy.x, z: enemy.z, ...impact, enemy: enemy.id, points })
+    this.events.push({ kind, x: enemy.x, z: enemy.z, ...impact, enemy: enemy.id, points, ...feedback })
     this.damage(enemy, damage, now)
     const fire = this.build.rank('fire')
     if (fire && enemy.hp > 0) {

@@ -16,7 +16,7 @@ const loop = 'music-loop'
 const fadeSeconds = 0.42
 const maxVoices = 8
 
-const hitFamily = new Set<SfxCue>(['punch.hit', 'punch.heavy_hit', 'dash.impact', 'uppercut.impact'])
+const hitFamily = new Set<SfxCue>(['punch.hit', 'punch.jab_hit', 'punch.heavy_hit', 'dash.impact', 'uppercut.impact'])
 function priority(cue: SfxCue) {
   if (cue.startsWith('game.')) return 4
   if (cue === 'boss.windup' || cue.startsWith('counter.')) return 3
@@ -133,7 +133,7 @@ export class GameAudio {
       if (position !== -1) this.voices.splice(position, 1)
       sound.destroy()
     })
-    if (!sound.play({ volume: this.effectGain(item.volume) })) {
+    if (!sound.play({ volume: this.effectGain(item.volume), rate: cue === 'punch.jab_hit' ? 1.15 : 1 })) {
       this.voices.pop()
       sound.destroy()
       return

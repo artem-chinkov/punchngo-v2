@@ -24,7 +24,8 @@ export function tutorialDemo(seconds: number, balance: Balance, reduced: boolean
     const starts = [0.20, 0.82, 1.07, 1.32]
     const index = reduced ? 0 : age >= starts[3] ? 3 : age >= starts[2] ? 2 : age >= starts[1] ? 1 : age >= starts[0] ? 0 : -1
     if (index >= 0) demo.strike = { kind, hand: index % 2 ? 'right' : 'left',
-      at: -(reduced ? 0.08 : age - starts[index]), aim: 0, hit: false }
+      at: -(reduced ? 0.08 : age - starts[index]), aim: 0, hit: false,
+      punchSource: index === 0 ? 'tap' : index === 1 ? 'holdFirst' : 'holdRepeat' }
   } else if (kind === 'side') {
     const left = age < 1
     const time = (age % 1) - 0.15

@@ -24,6 +24,7 @@ export interface Balance {
   punchInterval: number
   minPunchInterval: number
   holdHurtPause: number
+  holdRepeatDamage: number
   specialCooldown: number
   superSpeed: number
   superDuration: number
@@ -85,7 +86,7 @@ export interface Balance {
 export const defaultBalance: Balance = {
   hp: 100, speed: 6.4, holdSlowdownPerSecond: 15, holdMinSpeedPercent: 25,
   dashMultiplier: 2, dashLimit: 2.12, dashDuration: 0.5, laneDuration: 0.18,
-  punchInterval: 0.25, minPunchInterval: 0.18, holdHurtPause: 0.12,
+  punchInterval: 0.25, minPunchInterval: 0.18, holdHurtPause: 0.12, holdRepeatDamage: 0.8,
   specialCooldown: 0.7, superSpeed: 2.8, superDuration: 1.2, superPrepare: 0.1, superFade: 0.3,
   superRecovery: 0.8, superDamage: 0.5, electricDamage: 0.55, electricRadius: 3.9,
   uppercutAnimation: 0.55, uppercutWindup: 0.10, uppercutDrive: 0.14,

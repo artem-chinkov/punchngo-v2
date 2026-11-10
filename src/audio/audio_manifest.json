@@ -52,6 +52,15 @@
       "volume": 0.58
     },
     {
+      "key": "punch.jab_hit",
+      "files": [
+        "sfx/hit_light_01.wav",
+        "sfx/hit_light_02.wav",
+        "sfx/hit_light_03.wav"
+      ],
+      "volume": 0.35
+    },
+    {
       "key": "punch.heavy_hit",
       "files": [
         "sfx/hit_heavy_01.wav",

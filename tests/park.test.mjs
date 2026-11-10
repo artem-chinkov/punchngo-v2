@@ -11,6 +11,7 @@ const { Random } = await load('game/random')
 const { upgradeIds, upgrades, levelXP } = await load('game/upgrades')
 const { defaultBalance, uppercutTiming } = await load('combat/balance')
 const { uppercutFrame } = await load('combat/Uppercut')
+const { attackVisual, impactVisual, punchHandMotion, holdJabHitstop } = await load('rendering/AttackMotion')
 const { setPose } = await load('combat/EnemyAI')
 const { defaultWorld, laneX } = await load('world/route')
 const { TouchController } = await load('input/TouchController')
@@ -1524,18 +1525,19 @@ test('a lethal first ram contact spends its only hit and does not block further 
 test('tap and hold damage pushed targets at normal cadence; KO preserves the remaining chain without a jump', () => {
   const run = newRun()
   run.start()
-  const first = place(run, 'thug', 0, 3, 60)
+  // Ram contact + tap leave 19 HP: the next 19.2-HP jab must KO once.
+  const first = place(run, 'thug', 0, 3, 55)
   const second = place(run, 'thug', 0, 4, 100)
   const third = place(run, 'brute', 0, 5, 150)
   run.special('superDash')
   play(run, 0.3)
   assert.equal(run.tap(), true)
-  assert.equal(first.hp, 24)
+  assert.equal(first.hp, 19)
   assert.equal(first.dashPushed, true)
   assert.equal(first.chain, undefined)
   assert.equal(run.tap(), false)
   for (let i = 0; i < 14; i++) run.update(dt, false, { dash: false })
-  assert.equal(first.hp, 24)
+  assert.equal(first.hp, 19)
   const z = second.z
   run.update(dt, false, { dash: false })
   assert.equal(first.hp, 0)
@@ -1547,7 +1549,7 @@ test('tap and hold damage pushed targets at normal cadence; KO preserves the rem
   assert.ok(second.z >= z && second.z - z <= run.runner.speed * dt + 1e-8)
   assert.equal(run.tap(), false)
   for (let i = 0; i < 15; i++) run.update(dt, false, { dash: false })
-  assert.equal(second.hp, 76)
+  assert.equal(second.hp, 80.8)
   assert.deepEqual([run.combat.kills, run.combat.xp], [1, 16])
 })
 
@@ -2224,4 +2226,213 @@ test('swept ricochet needs simultaneous body height and planar contact', async (
   assert.ok(Number.isFinite(sweepBodies(0, -3, 1.7, 0, 6, -2, 0.68, 1.1)))
   assert.equal(sweepBodies(0, -3, 2.3, 0, 6, 0, 0.68, 1.1), Infinity)
   assert.equal(sweepBodies(0, -3, 2.3, 0, 6, -1.3, 0.68, 1.1), Infinity)
+})
+
+test('hold sources keep full first/missed strikes, reduced repeats and independent tap damage', () => {
+  for (const steel of [0, 1, 3]) {
+    const run = newRun(), { combat, runner } = run
+    for (let i = 0; i < steel; i++) combat.take('steel')
+    // Bulldog stays at the contact point: isolate primary damage from projectile physics.
+    const target = place(run, 'bulldog', 0, 2, 10000)
+    const full = 24 * (1 + steel * 0.2)
+    let hp = target.hp
+    assert.equal(combat.holdAttack(runner, 0, true), true)
+    assert.ok(Math.abs(hp - target.hp - full) < 1e-9)
+    assert.equal(combat.strike.punchSource, 'holdFirst')
+    assert.equal(runner.dash, run.balance.dashMultiplier - 1)
+    runner.advance(0.25)
+    target.z = runner.z + 2
+    const oldDash = runner.dash
+    for (let i = 1; i <= 12; i++) {
+      hp = target.hp
+      assert.equal(combat.holdAttack(runner, i * 0.25), true)
+      assert.ok(Math.abs(hp - target.hp - full * 0.8) < 1e-9)
+      assert.equal(combat.strike.punchSource, 'holdRepeat')
+      assert.equal(runner.dash, oldDash)
+      assert.equal(events(combat, 'hit').at(-1).punchSource, 'holdRepeat')
+      assert.ok(combat.audioCues.includes('punch.jab_hit'))
+      assert.equal(combat.audioCues.filter(cue => cue === 'punch.jab_hit').length, i)
+    }
+    hp = target.hp
+    assert.equal(combat.tap(runner, 3.25), true)
+    assert.ok(Math.abs(hp - target.hp - full) < 1e-9)
+    assert.equal(combat.strike.punchSource, 'tap')
+    assert.equal(combat.audioCues.at(-1), 'punch.heavy_hit')
+  }
+  const run = newRun()
+  assert.equal(run.combat.holdAttack(run.runner, 0, true), true)
+  const miss = events(run.combat, 'miss').at(-1)
+  assert.equal(miss.punchSource, 'holdFirst')
+  assert.equal(miss.attackKind, 'punch')
+  const target = place(run, 'bulldog', 0, 2, 1000)
+  run.combat.holdAttack(run.runner, 0.25, false)
+  assert.equal(target.hp, 980.8)
+  assert.equal(events(run.combat, 'hit').length, 1)
+})
+
+test('real touch acceptance preserves first strike across cooldown and resets on release, swipe and cancellation', () => {
+  const savedWindow = globalThis.window, savedDocument = globalThis.document
+  globalThis.window = new EventTarget()
+  globalThis.document = new EventTarget()
+  class Canvas extends EventTarget {
+    clientWidth = 375
+    setPointerCapture(id) { this.capture = id }
+    hasPointerCapture(id) { return this.capture === id }
+    releasePointerCapture() { this.capture = undefined }
+  }
+  const canvas = new Canvas(), run = newRun()
+  let time = 0
+  const touch = new TouchController(canvas, () => 'play', () => {}, () => {}, () => time)
+  const pointer = (type, x = 80) => canvas.dispatchEvent(Object.assign(new Event('pointer' + type),
+    { pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: 80 }))
+  const attack = at => {
+    const hold = touch.hold()
+    const accepted = !!hold && run.combat.holdAttack(run.runner, at, hold.dash)
+    if (accepted) touch.acceptHold()
+    return accepted
+  }
+  try {
+    run.combat.tap(run.runner, 0)
+    pointer('down')
+    time = 149
+    assert.equal(touch.hold(), undefined)
+    time = 150
+    assert.equal(attack(0.15), false)
+    assert.deepEqual(touch.hold(), { dash: true })
+    assert.equal(attack(0.25), true) // A miss still consumes the first strike.
+    assert.deepEqual(touch.hold(), { dash: false })
+    assert.equal(attack(0.3), false)
+    assert.equal(attack(0.5), true)
+    assert.equal(run.combat.strike.punchSource, 'holdRepeat')
+    const target = place(run, 'bulldog', 0, 2, 1000)
+    for (const cancel of [() => pointer('up'), () => pointer('move', 130), () => touch.cancel(),
+      () => globalThis.window.dispatchEvent(new Event('blur')),
+      () => globalThis.document.dispatchEvent(new Event('visibilitychange'))]) {
+      cancel()
+      assert.equal(touch.hold(), undefined)
+      pointer('up')
+      pointer('down')
+      time += 150
+      const before = target.hp
+      const at = 0.75 + (1000 - before) / 24 * 0.25
+      assert.equal(attack(at), true)
+      assert.equal(run.combat.strike.punchSource, 'holdFirst')
+      assert.equal(before - target.hp, 24)
+    }
+  } finally {
+    touch.destroy()
+    globalThis.window = savedWindow
+    globalThis.document = savedDocument
+  }
+})
+
+test('hold damage tuning is bounded, does not change flurry cadence or weaken non-punch attacks', () => {
+  for (const [value, expected] of [[0.8, 19.2], [0.5, 12], [1, 24], [-3, 12], [5, 24], [NaN, 19.2], [Infinity, 19.2]]) {
+    const run = newRun(1, { ...balance(), holdRepeatDamage: value })
+    const target = place(run, 'bulldog', 0, 2, 1000)
+    run.combat.holdAttack(run.runner, 0, false)
+    assert.ok(Math.abs(1000 - target.hp - expected) < 1e-9)
+    const before = target.hp
+    run.combat.sideStrike(run.runner, 0.05, 1)
+    assert.ok(Math.abs(before - target.hp - 24 * 0.7) < 1e-9)
+  }
+  for (const flurry of [0, 1, 2]) {
+    const run = newRun()
+    for (let i = 0; i < flurry; i++) run.combat.take('flurry')
+    const interval = Math.max(0.18, 0.25 / (1 + flurry * 0.15))
+    assert.equal(run.combat.punchInterval, interval)
+    assert.equal(run.combat.holdAttack(run.runner, 0, true), true)
+    assert.equal(run.combat.holdAttack(run.runner, interval - 0.0001), false)
+    assert.equal(run.combat.holdAttack(run.runner, interval, false), true)
+    assert.equal(run.combat.strike.punchSource, 'holdRepeat')
+  }
+})
+
+test('jab shares the full punch impulse, fire, combo and secondary chain damage without duplicate rewards', () => {
+  const simulate = repeat => {
+    const run = newRun(), { combat, runner } = run
+    combat.take('fire'); combat.take('ram'); combat.take('domino'); combat.take('ricochet')
+    const target = place(run, 'thug', 0, 2, 1000)
+    const other = place(run, 'thug', 0, 3.2, 1000)
+    combat.holdAttack(runner, 0, !repeat)
+    const velocity = [target.vx, target.vz, target.flightUntil]
+    const burn = [target.burnTicks, target.burnDamage]
+    for (let i = 1; i <= 5; i++) combat.update(runner, i * dt, dt, true)
+    return { run, target, other, velocity, burn }
+  }
+  const full = simulate(false), jab = simulate(true)
+  assert.deepEqual(jab.velocity, full.velocity)
+  assert.deepEqual(jab.burn, full.burn)
+  assert.equal(jab.other.hp, full.other.hp)
+  assert.ok(jab.other.hp < 1000)
+  assert.equal(events(jab.run.combat, 'chain').length, 1)
+  assert.equal(events(jab.run.combat, 'chain')[0].punchSource, undefined)
+  assert.equal(jab.run.combat.combo, full.run.combat.combo)
+  const run = newRun(), target = place(run, 'thug', 0, 2, 19)
+  run.combat.holdAttack(run.runner, 0, false)
+  assert.equal(target.hp, 0)
+  const reward = [run.combat.kills, run.combat.xp, run.combat.score]
+  assert.deepEqual(reward, [1, 16, 100])
+  for (let i = 1; i <= 5; i++) run.combat.holdAttack(run.runner, i * 0.25, false)
+  assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], reward)
+})
+
+test('hold first and repeats retain their damage inside the ram and never restart its movement profile', () => {
+  const run = newRun()
+  run.start()
+  const target = place(run, 'brute', 0, 3, 1000)
+  run.special('superDash')
+  assert.equal(run.combat.holdAttack(run.runner, 0.05, true), false)
+  play(run, 0.3)
+  assert.equal(target.dashPushed, true)
+  const hp = target.hp, age = run.runner.superAge, speed = run.runner.speed
+  assert.equal(run.combat.holdAttack(run.runner, run.now, true), true)
+  assert.equal(hp - target.hp, 24)
+  assert.equal(run.runner.superAge, age)
+  assert.equal(run.runner.speed, speed)
+  assert.equal(run.runner.dash, 0)
+  play(run, 0.25)
+  const before = target.hp
+  assert.equal(run.combat.holdAttack(run.runner, run.now, false), true)
+  assert.ok(Math.abs(before - target.hp - 19.2) < 1e-9)
+  assert.equal(target.dashPushed, true)
+  assert.equal(target.chain, undefined)
+  assert.equal(run.runner.dash, 0)
+  assert.equal(events(run.combat, 'dashImpact').length, 1)
+})
+
+test('jab presentation is explicit, shorter and softer without inheriting into secondary effects or specials', () => {
+  const tap = attackVisual('punch', 'tap'), first = attackVisual('punch', 'holdFirst')
+  const jab = attackVisual('punch', 'holdRepeat')
+  assert.deepEqual(first, tap)
+  assert.ok(jab.duration < tap.duration && jab.amplitude < tap.amplitude && jab.trail < tap.trail)
+  assert.ok(jab.flash < tap.flash && jab.rays < tap.rays && jab.reaction < tap.reaction)
+  const peak = source => Math.max(...Array.from({ length: 161 }, (_, i) => punchHandMotion(i / 1000, jab.duration, source)))
+  assert.ok(Math.abs(peak('holdRepeat') / peak('tap') - 0.75) < 0.001)
+  assert.equal(punchHandMotion(0.16, 0.16, 'holdRepeat'), 0)
+  assert.equal(holdJabHitstop, 0.022)
+  assert.equal(impactVisual({ kind: 'hit', attackKind: 'punch', punchSource: 'holdRepeat' }).hitstop, 0.022)
+  assert.equal(impactVisual({ kind: 'hit', attackKind: 'punch', punchSource: 'tap' }).hitstop, 0.047)
+  assert.equal(impactVisual({ kind: 'chain', punchSource: 'holdRepeat' }).jab, false)
+  assert.equal(impactVisual({ kind: 'air' }).hitstop, 0.085)
+  assert.ok(impactVisual({ kind: 'ideal' }).strength > impactVisual({ kind: 'counter' }).strength)
+  assert.ok(impactVisual({ kind: 'counter' }).strength > tap.strength)
+  assert.equal(attackVisual('sideLeft', 'holdRepeat').jab, false)
+})
+
+test('repeat hit audio stays light for all enemy types and only real hits produce impact cues', () => {
+  for (const type of ['thug', 'quick', 'brute', 'bulldog']) {
+    const run = newRun()
+    place(run, type, 0, 2, 1000)
+    run.combat.holdAttack(run.runner, 0, false)
+    assert.ok(run.combat.audioCues.includes('punch.jab_hit'))
+    assert.equal(run.combat.audioCues.includes('punch.heavy_hit'), false)
+    const event = events(run.combat, 'hit')[0]
+    assert.equal(event.punchSource, 'holdRepeat')
+    assert.equal(event.hand, run.combat.strike.hand)
+  }
+  const run = newRun()
+  run.combat.holdAttack(run.runner, 0, false)
+  assert.deepEqual(run.combat.audioCues, ['punch.miss'])
+  assert.equal(events(run.combat, 'hit').length, 0)
 })

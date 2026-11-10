@@ -30,6 +30,7 @@ const combat: Field<Main>[] = [
 const gestures: Field<Main>[] = [
   ['minPunchInterval', 'Минимальный интервал ударов, с', 0.06, 0.5],
   ['holdHurtPause', 'Пауза серии после урона, с', 0, 0.5],
+  ['holdRepeatDamage', 'Урон повторов удержания, ×', 0.5, 1],
   ['specialCooldown', 'Интервал после апперкота, с', 0.1, 3],
   ['superSpeed', 'Пик скорости супер-рывка, ×', 1, 5],
   ['superDuration', 'Длительность супер-рывка, с', 0.15, 4],
