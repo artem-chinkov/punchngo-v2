@@ -117,11 +117,13 @@ export class ParkRun {
     if (this.combat.hp <= 0) {
       this.phase = 'defeat'
       this.runner.stopSuper()
+      this.combat.clearUppercut(this.runner)
       this.combat.dashPush.release(this.now)
       this.clearInput()
     } else if (this.combat.boss && this.combat.boss.hp <= 0) {
       this.phase = 'finisher'
       this.runner.stopSuper()
+      this.combat.clearUppercut(this.runner)
       this.combat.dashPush.release(this.now)
       this.clearInput()
       this.combat.finish(this.runner, this.now)
@@ -166,6 +168,7 @@ export class ParkRun {
 
   debugBoss() {
     this.runner.stopSuper()
+    this.combat.clearUppercut(this.runner)
     this.combat.dashPush.release(this.now)
     this.now = Math.max(this.now, this.balance.bossAt)
     this.clearInput()
@@ -176,6 +179,7 @@ export class ParkRun {
     const boss = this.combat.boss
     if (!boss || boss.hp <= 0) return
     this.runner.stopSuper()
+    this.combat.clearUppercut(this.runner)
     this.combat.dashPush.release(this.now)
     boss.bossPhase = phase
     boss.hp = boss.maxHp * (phase === 1 ? 1 : 0.48)

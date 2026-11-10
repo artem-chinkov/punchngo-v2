@@ -6,8 +6,9 @@ import { createEnemy, type Enemy } from '../combat/EnemyAI'
 import type { ParkRun } from '../game/ParkRun'
 import type { TutorialDemo } from '../game/TutorialDemo'
 import { superTiming, uppercutTiming } from '../combat/balance'
-import { superHandMotion, uppercutHandMotion } from './AttackMotion'
-import { route } from '../world/route'
+import { superHandMotion } from './AttackMotion'
+import { uppercutFrame } from '../combat/Uppercut'
+import { laneAt, laneX, route } from '../world/route'
 import type { PerspectiveProjector } from './PerspectiveProjector'
 
 const hands = ['left', 'right'] as const
@@ -37,6 +38,7 @@ export class CombatView {
   private readonly dashFlashes: Phaser.GameObjects.Graphics
   private readonly damageFrame: Phaser.GameObjects.Graphics
   private readonly shadows: Phaser.GameObjects.Graphics
+  private readonly upperWave: Phaser.GameObjects.Graphics
   private readonly previewImage: Phaser.GameObjects.Image
   private readonly previewEnemy = createEnemy(-1, 'thug', 0, 0, 100, 0)
   private readonly particles: Particle[] = []
@@ -50,6 +52,7 @@ export class CombatView {
 
   constructor(scene: Phaser.Scene, private readonly assets: AssetRegistry) {
     this.shadows = scene.add.graphics().setDepth(-9998)
+    this.upperWave = scene.add.graphics().setDepth(0.5)
     this.marks = scene.add.graphics().setDepth(1)
     this.warnings = scene.add.graphics().setDepth(3.5)
     this.effects = scene.add.graphics().setDepth(2)
@@ -99,6 +102,7 @@ export class CombatView {
     this.frame++
     this.tutorialFocus = undefined
     this.shadows.clear()
+    this.upperWave.clear()
     this.marks.clear()
     this.warnings.clear()
     this.effects.clear()
@@ -170,6 +174,7 @@ export class CombatView {
       this.effects.lineStyle(4, 0xffd26a, 0.44).strokeEllipse(wave.x, wave.y - 19, 210 * wave.scale, 19)
     }
     this.drawFists(run, width, height, wall, hurt, preview, demo)
+    this.drawUppercut(run, projector, wall, preview, demo)
     if (preview && preview.type !== 'hero') {
       const demo = this.previewEnemy
       const age = (wall - preview.start) % 1.7
@@ -283,7 +288,7 @@ export class CombatView {
     const fall = run.phase === 'defeat' ? knockout : preview?.type === 'hero' && preview.pose === 'knockout' ?
       Math.min(1, demoAge / 0.52) : 0
     const uppercut = run.combat.uppercutStrike
-    const timing = uppercutTiming(run.balance)
+    const timing = run.runner.uppercut?.profile ?? uppercutTiming(run.balance)
     const dashTiming = superTiming(run.balance)
     const dashAge = demo ? demo.superAge : run.runner.superActive ? run.runner.superAge : undefined
     for (const hand of hands) {
@@ -292,10 +297,10 @@ export class CombatView {
       const latest = run.combat.strike
       const ordinary = latest?.hand === hand && latest.kind !== 'uppercut' &&
         (dashAge === undefined || latest.at >= now - dashAge - 1e-9) ? latest : undefined
-      const rising = uppercut?.hand === hand && now - uppercut.at < timing.duration ? uppercut : undefined
+      const rising = uppercut?.hand === hand && (run.runner.uppercut?.age ?? now - uppercut.at) < timing.duration ? uppercut : undefined
       let strike: Strike | undefined = ordinary && (!rising || ordinary.at > rising.at) &&
         now - ordinary.at < this.strikeDuration(ordinary.kind, run) ? ordinary : rising
-      let age = strike ? now - strike.at : 1
+      let age = strike === uppercut && run.runner.uppercut ? run.runner.uppercut.age : strike ? now - strike.at : 1
       let superAge = dashAge
       let pose: HandPose = run.active ? run.runner.dash > 0.3 ? 'dash' : 'run' : 'idle'
       if (demo) {
@@ -313,7 +318,8 @@ export class CombatView {
           age = hand === (pose === 'sideLeft' ? 'left' : 'right') ? elapsed : 2
         }
       }
-      const duration = strike ? this.strikeDuration(strike.kind, run) : 1
+      const profile = preview || demo ? uppercutTiming(run.balance) : timing
+      const duration = strike?.kind === 'uppercut' ? profile.duration : strike ? this.strikeDuration(strike.kind, run) : 1
       if (age >= duration) strike = undefined
       const kind = strike?.kind
       const lateral = kind === 'sideLeft' ? -1 : kind === 'sideRight' ? 1 : 0
@@ -321,21 +327,24 @@ export class CombatView {
       const extension = strike ? Math.sin(time ** 0.61 * Math.PI) : 0
       const powered = !strike && superAge !== undefined && superAge < dashTiming.duration
       const thrust = powered ? superHandMotion(superAge!, run.balance) : 0
-      const risingMotion = kind === 'uppercut' ? uppercutHandMotion(age, run.balance) : 0
+      const sample = uppercutFrame(age, profile)
+      const risingMotion = kind === 'uppercut' ? sample.hand : 0
       if (powered) pose = 'superDash'
       if (strike) pose = strike.kind
       if (demoHurt > 0.60) pose = 'hurt'
       if (fall > 0) pose = 'knockout'
       const bob = Math.sin((preview?.type === 'hero' ? wall : now) * (pose === 'dash' ? 15 : 9) + side * 1.2) *
-        (pose === 'dash' ? 10 : pose === 'run' || run.active ? 6 : 2)
+        (pose === 'dash' ? 10 : pose === 'run' || run.active ? 6 : 2) *
+        (1 - uppercutFrame(run.runner.uppercut?.age ?? (kind === 'uppercut' ? age : -1), profile).compression * 0.8)
       const aim = strike ? Math.max(-45, Math.min(45, strike.aim * 25)) : 0
       const x = width / 2 - this.bodySide * 8 * bump + side * (102 + fall * 24 + thrust * 10) + (lateral
         ? lateral * (-98 + time * 198) * extension : kind === 'uppercut'
-          ? (aim - side * 65) * Math.max(0, risingMotion) : (aim - side * (kind === 'finish' ? 120 : 92)) * extension)
+          ? (aim - side * 35) * Math.max(0, risingMotion) : (aim - side * (kind === 'finish' ? 120 : 92)) * extension)
       const lift = powered ? thrust * 0.27 : kind === 'uppercut' ? risingMotion * 0.46 :
         lateral ? extension * 0.14 : extension * 0.31
       const y = height - 103 + bob - lift * height + fall * 122 + demoHurt * 17 + bump * 8
-      const scale = powered ? 1 + thrust * 0.28 : kind === 'uppercut' ? 1 + risingMotion * 0.31 :
+      const scale = powered ? 1 + thrust * 0.28 : kind === 'uppercut' ?
+        1 + Math.min(0, risingMotion) * 0.31 - Math.max(0, risingMotion) * 0.18 :
         1 - extension * 0.33 + (kind === 'counter' ? extension * 0.12 : 0)
       const id = hand === 'left' ? 'fist.left' : 'fist.right'
       this.assets.pose(image, id, pose, powered ? superAge! : strike ? age : now)
@@ -343,6 +352,50 @@ export class CombatView {
       image.setRotation(-this.bodySide * bump * 0.06 + side * (0.11 + fall * 0.6 + demoHurt * 0.24 - thrust * 0.16) +
         extension * side * (kind === 'counter' ? -0.24 : kind === 'uppercut' ? -0.52 : lateral ? -0.78 : -0.10))
     }
+  }
+
+  private drawUppercut(run: ParkRun, projector: PerspectiveProjector, wall: number, preview?: AnimationPreview, demo?: TutorialDemo) {
+    const state = run.runner.uppercut
+    const age = demo ? demo.kind === 'uppercut' && demo.strike ? -demo.strike.at : -1 :
+      preview ? preview.type === 'hero' && preview.pose === 'uppercut' ? (wall - preview.start) % 0.9 : -1 : state?.age ?? -1
+    const p = preview || demo ? uppercutTiming(run.balance) : state?.profile ?? uppercutTiming(run.balance)
+    const frame = uppercutFrame(age, p)
+    if (!frame.wave || frame.reach < 0.05) return
+    const hand = demo?.strike?.hand ?? (preview ? 'right' : run.combat.uppercutStrike?.hand) ?? 'left'
+    const fist = this.fists[hand]
+    const lane = laneX(laneAt(run.runner.x))
+    const cameraZ = projector.cameraZ
+    const left = projector.project(lane - route.laneWidth * 0.45, cameraZ + frame.reach)
+    const right = projector.project(lane + route.laneWidth * 0.45, cameraZ + frame.reach)
+    const tip = projector.project(lane, cameraZ + frame.reach)
+    const nearLeft = projector.project(lane - route.laneWidth * 0.45, cameraZ + 0.1)
+    const nearRight = projector.project(lane + route.laneWidth * 0.45, cameraZ + 0.1)
+    const x = Math.max(nearLeft.x, Math.min(nearRight.x, fist.x))
+    const y = fist.y + 22 * tip.scale
+    const top = tip.y - (118 + frame.progress * 28) * tip.scale
+    const g = this.upperWave, alpha = frame.wave
+    const base = tip.y - 12 * tip.scale
+    const arc = () => {
+      for (let i = 0; i <= 12; i++) {
+        const t = i / 12
+        g.lineTo(left.x + (right.x - left.x) * t, base - Math.sin(t * Math.PI) * (base - top))
+      }
+    }
+    if (!this.reducedMotion.matches) {
+      g.fillStyle(0xffcd79, 0.09 * alpha).beginPath().moveTo(x, y)
+      arc()
+      g.closePath().fillPath()
+      g.lineStyle(3, 0xffdc9c, 0.28 * alpha).lineBetween(fist.x, fist.y + 22, fist.x - 5, fist.y + 44)
+      const road = projector.project(lane, cameraZ + 0.65)
+      for (let i = 0; i < 4; i++) {
+        const offset = (i - 1.5) * 9 * road.scale
+        g.lineStyle(2, 0xe6c68c, alpha * 0.35).lineBetween(road.x + offset, road.y,
+          road.x + offset * 1.3, road.y - (4 + i % 2 * 5) * road.scale)
+      }
+    }
+    g.lineStyle(2, 0xffedbc, 0.82 * alpha).beginPath().moveTo(left.x, base)
+    arc()
+    g.strokePath()
   }
 
   private strikeDuration(kind: Strike['kind'], run: ParkRun) {

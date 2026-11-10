@@ -1,5 +1,6 @@
 import type { Strike } from '../combat/CombatSystem'
 import { superTiming, uppercutTiming, type Balance } from '../combat/balance'
+import { uppercutFrame } from '../combat/Uppercut'
 import type { HintKind } from './Onboarding'
 
 export interface TutorialDemo {
@@ -43,6 +44,11 @@ export function tutorialDemo(seconds: number, balance: Balance, reduced: boolean
     const time = (age - 0.35) * Math.max(1, timing.duration / 1.25)
     if (reduced || time >= 0) demo.strike = { kind, hand: cycle % 2 ? 'right' : 'left',
       at: -(reduced ? timing.windup + timing.drive * 0.9 : time), aim: 0, hit: false }
+    if (!reduced) {
+      const sample = uppercutFrame(time, timing)
+      demo.z = Math.max(-timing.retreat, (balance.speed - timing.brake) * timing.windup) * sample.compression +
+        timing.distance * sample.progress * sample.wave
+    }
   }
   return demo
 }

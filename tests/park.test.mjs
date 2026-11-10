@@ -9,7 +9,8 @@ const { ParkRun } = await load('game/ParkRun')
 const { Runner } = await load('game/Runner')
 const { Random } = await load('game/random')
 const { upgradeIds, upgrades, levelXP } = await load('game/upgrades')
-const { defaultBalance } = await load('combat/balance')
+const { defaultBalance, uppercutTiming } = await load('combat/balance')
+const { uppercutFrame } = await load('combat/Uppercut')
 const { setPose } = await load('combat/EnemyAI')
 const { defaultWorld, laneX } = await load('world/route')
 const { TouchController } = await load('input/TouchController')
@@ -244,8 +245,10 @@ test('super dash integrates a capped 1.2 s speed profile, works without a target
   assert.equal(run.special('uppercut'), true)
   assert.equal(combat.strike.kind, 'uppercut')
   run.now = 2.699
+  runner.advance(0.699)
   assert.equal(run.special('superDash'), false)
   run.now = 2.7
+  runner.advance(0.001)
   assert.equal(run.special('superDash'), true)
 })
 
@@ -743,14 +746,17 @@ test('uppercut hits at thrust, alternates independently and causes a forceful se
   const fourth = place(run, 'thug', 0, 10.1, 400)
   combat.special(runner, 0, 'uppercut')
   assert.equal(combat.strike.hand, 'left')
-  combat.update(runner, 0.11, dt, true)
+  runner.advance(0.11)
+  combat.update(runner, 0.11, 0.11, true)
   assert.equal(first.hp, 400)
-  combat.update(runner, 0.12, dt, true)
+  runner.advance(0.04)
+  combat.update(runner, 0.15, 0.04, true)
   assert.equal(first.hp, 400 - balance.damage * balance.uppercutDamage)
   assert.ok(first.y > 0 && first.vz > balance.knockback * 2)
   const samples = []
   for (let i = 1; i <= 40; i++) {
-    combat.update(runner, 0.12 + i * dt, dt, true)
+    runner.advance(dt)
+    combat.update(runner, 0.15 + i * dt, dt, true)
     samples.push(events(combat, 'ricochet').length)
   }
   assert.deepEqual(events(combat, 'ricochet').map(e => e.enemy), [second.id, third.id])
@@ -763,6 +769,8 @@ test('uppercut hits at thrust, alternates independently and causes a forceful se
   combat.tap(runner, 1.12)
   combat.special(runner, 1.15, 'uppercut')
   assert.equal(combat.strike.hand, 'right')
+  runner.advance(0.7)
+  combat.update(runner, 1.85, 0.7, true)
   combat.special(runner, 1.85, 'uppercut')
   assert.equal(combat.strike.hand, 'left')
   const fresh = newRun()
@@ -778,15 +786,17 @@ test('an upgraded uppercut makes one damaging wave on physical landing even if i
     if (upgraded) combat.take('uppercut')
     const primary = place(run, 'thug', 0, 1.7, 15)
     assert.equal(combat.special(runner, 0, 'uppercut'), true)
-    combat.update(runner, balance.uppercutWindup, dt, true)
+    runner.advance(0.15)
+    combat.update(runner, 0.15, 0.15, true)
     assert.equal(primary.hp, 0)
     assert.equal(primary.pose, 'airborne')
     assert.ok(primary.y > 0.04)
     assert.equal(events(combat, 'landing').length, 0)
     let other
     for (let i = 1; i <= 68; i++) {
-      if (!other && primary.vy < 0 && primary.y < 0.27 && primary.y > 0) other = place(run, 'thug', 1, primary.z + 0.2, 120)
-      combat.update(runner, balance.uppercutWindup + i * dt, dt, true)
+      if (!other && primary.vy < 0 && primary.y < 0.27 && primary.y > 0) other = place(run, 'thug', 1, primary.z - runner.z + 0.2, 120)
+      runner.advance(dt)
+      combat.update(runner, 0.15 + i * dt, dt, true)
     }
     assert.equal(primary.y, 0)
     assert.equal(primary.landingWave, undefined)
@@ -1213,8 +1223,7 @@ test('move audio reports one dash start, one uppercut windup and one actual heav
   place(run, 'thug', 0, 2, 200)
   assert.equal(combat.special(runner, 2, 'uppercut'), true)
   assert.deepEqual(combat.audioCues, ['dash.start', 'uppercut.windup'])
-  combat.update(runner, 2.12, dt, true)
-  combat.update(runner, 2.13, dt, true)
+  for (let i = 1; i <= 12; i++) { runner.advance(dt); combat.update(runner, 2 + i * dt, dt, true) }
   assert.deepEqual(combat.audioCues, ['dash.start', 'uppercut.windup', 'uppercut.impact'])
 })
 
@@ -1258,13 +1267,16 @@ test('dash and uppercut damage Bulldog without interrupting his attack, while co
   run.now = start + 2
   boss.z = runner.z + 2
   assert.equal(run.special('uppercut'), true)
-  combat.update(runner, run.now + balance.uppercutWindup, 0, true)
+  runner.advance(0.16)
+  combat.update(runner, run.now + 0.16, 0.16, true)
   assert.equal(boss.hp, 1000 - balance.damage * (balance.superDamage + balance.uppercutDamage))
   assert.equal(boss.pose, 'telegraph')
   assert.equal(boss.until, until)
   assert.equal(boss.y, 0)
   assert.equal(boss.vz, 0)
 
+  runner.advance(0.54)
+  combat.update(runner, start + 2.7, 0.54, true)
   run.now = start + 2.7
   assert.equal(run.special('superDash'), true)
   setPose(boss, 'telegraph', run.now, 0.18)
@@ -1819,6 +1831,392 @@ test('burning KO detaches a pushed victim once and promotes the next live target
   assert.equal(next.hp, 100)
   assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], [1, 16, 100])
   assert.equal(events(run.combat, 'chain').length, 0)
+})
+
+test('spring compression is additive, permits retreat, and keeps high-speed forward motion', () => {
+  for (const [speed, expected] of [[6.4, -1.6], [12, 4], [1.6, -6.4]]) {
+    const runner = new Runner({ ...balance(), speed })
+    runner.z = 10
+    assert.equal(runner.launchUppercut(), true)
+    assert.ok(Math.abs(runner.speed - expected) < 1e-10)
+    runner.advance(0.04)
+    assert.ok(Math.abs(runner.z - (10 + expected * 0.04)) < 1e-10)
+    assert.ok(Math.abs(runner.speed - expected) < 1e-10)
+  }
+})
+
+test('spring retreat is a cumulative 0.3 budget, stops at the route start, and cannot use ram limits', () => {
+  const runner = new Runner({ ...balance(), speed: 1.6 })
+  runner.z = 10
+  runner.launchUppercut()
+  runner.advance(0.09)
+  assert.ok(Math.abs(runner.z - 9.7) < 1e-9)
+  assert.ok(Math.abs(runner.uppercut.retreated - 0.3) < 1e-9)
+  assert.equal(runner.speed, 0)
+  runner.advance(0.01)
+  assert.ok(runner.speed > 1.6)
+  const origin = new Runner(balance())
+  origin.launchUppercut()
+  origin.advance(0.1)
+  assert.equal(origin.z, 0)
+  assert.equal(origin.uppercut.retreated, 0)
+  origin.advance(0.14)
+  assert.ok(origin.z > 1.7)
+  assert.equal(origin.superActive, false)
+})
+
+test('spring drive adds exactly 0.85 over 0.14 seconds and fades to the normal speed at 0.55', () => {
+  const settings = balance(), spring = new Runner(settings), normal = new Runner(settings)
+  spring.z = normal.z = 10
+  spring.launchUppercut()
+  spring.advance(0.1); normal.advance(0.1)
+  assert.ok(Math.abs(spring.z - 9.84) < 1e-9)
+  const s = spring.z, n = normal.z
+  spring.advance(0.14); normal.advance(0.14)
+  assert.ok(Math.abs((spring.z - s) - (normal.z - n) - 0.85) < 1e-9)
+  assert.ok(spring.speed > settings.speed && spring.speed < settings.speed + 1.2)
+  const tailStart = spring.z - normal.z
+  spring.advance(0.31); normal.advance(0.31)
+  const tail = spring.z - normal.z - tailStart
+  assert.ok(tail > 0.17 && tail < 0.172)
+  assert.equal(spring.uppercutActive, false)
+  assert.equal(spring.speed, settings.speed)
+  spring.advance(1); normal.advance(1)
+  assert.ok(Math.abs(spring.z - normal.z - (tail - 0.8 + 0.85)) < 1e-9)
+})
+
+test('spring layers over tap acceleration and hold recovery without changing their ordinary profiles', () => {
+  for (const holding of [false, true]) {
+    const settings = balance(), spring = new Runner(settings), normal = new Runner(settings)
+    spring.z = normal.z = 10
+    if (holding) { spring.advance(5, true); normal.advance(5, true) }
+    else { spring.launchDash(1); normal.launchDash(1) }
+    spring.launchUppercut()
+    const samples = []
+    for (let i = 0; i < 36; i++) {
+      spring.advance(dt, holding); normal.advance(dt, holding)
+      assert.ok(spring.uppercut.retreated <= 0.3 + 1e-9)
+      samples.push(spring.speed)
+      assert.ok(Math.abs(spring.dash - normal.dash) < 1e-9)
+    }
+    assert.equal(spring.speed, normal.speed)
+    assert.ok(samples.every(Number.isFinite))
+  }
+})
+
+test('growing uppercut front is the shared fist/wave timeline and hits a target beyond ordinary reach once', () => {
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  const target = place(run, 'brute', 0, 3.8, 200)
+  run.balance.chainDepth = run.balance.uppercutChainDepth = 0
+  assert.equal(run.special('uppercut'), true)
+  play(run, 0.1)
+  assert.equal(target.hp, 200)
+  let checkedFront = false
+  for (let i = 0; i < 9; i++) {
+    run.update(dt)
+    if (!checkedFront && events(run.combat, 'air').length) {
+      const time = (target.since - (run.now - dt)) / dt
+      const segment = run.runner.uppercutSegments.find(s => time <= s.to + 1e-10)
+      const u = (time - segment.from) / (segment.to - segment.from)
+      const heroZ = segment.z0 + (segment.z1 - segment.z0) * u
+      const front = uppercutFrame(target.since, run.runner.uppercut.profile).reach
+      assert.ok(Math.abs(events(run.combat, 'air')[0].z - heroZ - front) < 1e-7)
+      checkedFront = true
+    }
+  }
+  assert.equal(checkedFront, true)
+  assert.equal(target.hp, 200 - 24 * 1.4)
+  assert.equal(events(run.combat, 'air').length, 1)
+  assert.equal(run.balance.reach, 3.2)
+  assert.ok(target.y > 0 && target.vz > 0)
+  const event = events(run.combat, 'air')[0]
+  assert.ok(event.z > 13)
+  const impactAge = target.since
+  assert.ok(impactAge >= 0.1 && impactAge <= 0.24)
+  const frame = uppercutFrame(impactAge, run.runner.uppercut.profile)
+  assert.ok(frame.reach > 0 && frame.reach <= 4)
+  assert.ok(Math.abs(frame.reach - 4 * (impactAge - 0.1) / 0.14) < 1e-9)
+  play(run, 0.5, true)
+  assert.equal(events(run.combat, 'air').length, 1)
+})
+
+test('uppercut sweep misses targets outside its growing trajectory, lane or ground height', () => {
+  const run = newRun()
+  run.start()
+  const far = place(run, 'thug', 0, 12, 200)
+  const side = place(run, 'thug', 1, 3.7, 200)
+  const airborne = place(run, 'thug', 0, 3.8, 200)
+  airborne.y = 2
+  airborne.vy = 5
+  airborne.flightUntil = 2
+  setPose(airborne, 'airborne', 0, 2)
+  run.special('uppercut')
+  play(run, 0.6, true)
+  assert.deepEqual([far.hp, side.hp, airborne.hp], [200, 200, 200])
+  assert.equal(events(run.combat, 'air').length, 0)
+  assert.equal(events(run.combat, 'miss').length, 1)
+  assert.equal(run.combat.xp, 0)
+  assert.equal(run.combat.combo, 0)
+})
+
+test('uppercut hits the first valid crossing among multiple moving targets at high speed', () => {
+  const run = newRun(1, { ...balance(), speed: 20, uppercutChainDepth: 0 })
+  run.start()
+  run.runner.z = 10
+  const second = place(run, 'thug', 0, 7, 200)
+  const first = place(run, 'thug', 0, 4.1, 200)
+  const adjacent = place(run, 'quick', -1, 3.8, 200)
+  setPose(adjacent, 'recovery', 0, 2)
+  run.special('uppercut')
+  run.update(0.24, true)
+  assert.deepEqual(events(run.combat, 'air').map(e => e.enemy), [first.id])
+  assert.equal(first.hp, 200 - 24 * 1.4)
+  assert.deepEqual([second.hp, adjacent.hp], [200, 200])
+  assert.ok(first.z > run.runner.z)
+  assert.ok(first.y > 0)
+})
+
+test('uppercut uses the actual current lane during a change and sees targets entering/leaving its box', () => {
+  for (const entering of [false, true]) {
+    const run = newRun()
+    run.start()
+    run.runner.z = 10
+    const enemy = place(run, 'quick', 0, 3.7, 200)
+    enemy.x = entering ? laneX(-1) : 0
+    enemy.destination = entering ? 0 : -1
+    setPose(enemy, 'positioning', 0)
+    run.special('uppercut')
+    play(run, 0.25, true)
+    assert.equal(events(run.combat, 'air').length, entering ? 1 : 0)
+  }
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  run.swipe(1)
+  const oldLane = place(run, 'thug', 0, 4, 200)
+  const newLane = place(run, 'thug', 1, 4, 200)
+  run.special('uppercut')
+  play(run, 0.25, true)
+  assert.equal(oldLane.hp, 200)
+  assert.equal(newLane.hp, 200 - 24 * 1.4)
+})
+
+test('a single uppercut step preserves retreat and forward paths even when net displacement is positive', () => {
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  const behind = place(run, 'thug', 0, -0.3, 200)
+  setPose(behind, 'recovery', 0, 2)
+  run.special('uppercut')
+  run.update(0.24)
+  assert.ok(run.runner.z > 10)
+  assert.ok(run.runner.uppercutSegments.some(s => s.z1 < s.z0))
+  assert.ok(run.runner.uppercutSegments.some(s => s.z1 > s.z0))
+  assert.equal(events(run.combat, 'bodyContact').length, 1)
+  assert.equal(run.combat.hp, 95)
+  assert.equal(behind.hp, 200)
+})
+
+test('spring grants no protection in compression or drive and does not spend damage after a lethal attack', () => {
+  for (const attackAt of [0.05, 0.11]) {
+    const run = newRun()
+    run.start()
+    run.runner.z = 10
+    const enemy = place(run, 'thug', 0, 1.8, 200)
+    setPose(enemy, 'telegraph', 0, attackAt)
+    run.special('uppercut')
+    run.update(0.12)
+    assert.equal(run.combat.hp, 85)
+    assert.ok(Math.abs(run.combat.invulnerableUntil - attackAt - 0.8) < 1e-8)
+    assert.equal(enemy.hp, 200)
+  }
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  run.combat.hp = 5
+  const enemy = place(run, 'thug', 0, 1.8, 200)
+  setPose(enemy, 'telegraph', 0, 0.05)
+  run.special('uppercut')
+  run.update(0.24)
+  assert.equal(run.phase, 'defeat')
+  assert.equal(enemy.hp, 200)
+  assert.equal(run.runner.uppercut, undefined)
+  assert.equal(run.combat.uppercutStrike, undefined)
+})
+
+test('a real early uppercut hit keeps its ordinary interruption, while Bulldog attacks through the strike', () => {
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  const regular = place(run, 'thug', 0, 1, 200)
+  setPose(regular, 'telegraph', 0, 0.18)
+  run.special('uppercut')
+  run.update(0.2)
+  assert.equal(run.combat.hp, 100)
+  assert.equal(regular.hp, 200 - 24 * 1.4)
+  assert.equal(regular.pose, 'airborne')
+  for (const phase of [1, 2]) {
+    const duel = newRun()
+    duel.debugBoss()
+    const boss = duel.combat.boss
+    boss.bossPhase = phase
+    boss.z = duel.runner.z + 2
+    setPose(boss, 'telegraph', duel.now, 0.18)
+    duel.special('uppercut')
+    duel.update(0.2)
+    assert.equal(duel.combat.hp, 100 - duel.balance.enemies.bulldog.damage)
+    assert.equal(boss.hp, boss.maxHp - 24 * 1.4)
+    assert.equal(boss.pose, 'attack')
+    assert.equal(boss.y, 0)
+    assert.equal(boss.vz, 0)
+  }
+})
+
+test('spring preserves punch cadence, side actions, manual counters and rejects specials without queuing', () => {
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  run.special('uppercut')
+  assert.equal(run.tap(), true)
+  assert.equal(run.tap(), false)
+  assert.equal(run.swipe(1), true)
+  assert.equal(run.special('superDash'), false)
+  assert.equal(run.special('uppercut'), false)
+  play(run, 0.7, true)
+  assert.equal(run.runner.superActive, false)
+  assert.equal(run.special('superDash'), true)
+  assert.equal(run.special('uppercut'), false)
+  const duel = newRun()
+  duel.debugBoss()
+  const boss = duel.combat.boss
+  boss.z = duel.runner.z + 2
+  setPose(boss, 'telegraph', duel.now, 0.2)
+  duel.special('uppercut')
+  assert.equal(duel.tap(), true)
+  assert.equal(boss.pose, 'stunned')
+  assert.equal(duel.combat.counters, 1)
+})
+
+test('spring pause freezes its state and victory/DEV transitions clear its pending damage and movement', () => {
+  const paused = newRun()
+  paused.start()
+  paused.runner.z = 10
+  paused.special('uppercut')
+  paused.combat.xp = levelXP(2)
+  paused.update(0.05, true)
+  assert.equal(paused.phase, 'upgrade')
+  const snapshot = [paused.now, paused.runner.z, paused.runner.uppercut.age, paused.runner.uppercut.retreated]
+  paused.update(1, true)
+  assert.deepEqual([paused.now, paused.runner.z, paused.runner.uppercut.age, paused.runner.uppercut.retreated], snapshot)
+  paused.choose(paused.offer[0])
+  play(paused, 0.55, true)
+  assert.equal(paused.runner.uppercutActive, false)
+  for (const transition of ['victory', 'debugBoss', 'debugPhase']) {
+    const run = newRun()
+    run.debugBoss()
+    const boss = run.combat.boss
+    boss.z = run.runner.z + 2
+    if (transition === 'victory') boss.hp = 10
+    run.special('uppercut')
+    if (transition === 'debugBoss') run.debugBoss()
+    if (transition === 'debugPhase') run.debugPhase(2)
+    if (transition === 'victory') play(run, 0.25, true)
+    assert.equal(run.runner.uppercut, undefined)
+    assert.equal(run.combat.uppercutStrike, undefined)
+  }
+})
+
+test('spring movement matches at 30/60/120 physics Hz and fixed-step rendered FPS', async () => {
+  const { FrameClock } = await load('game/FrameClock')
+  const simulate = (hz, fixed) => {
+    const run = newRun()
+    run.start()
+    run.runner.z = 10
+    const target = place(run, 'brute', 0, 3.8, 200)
+    run.special('uppercut')
+    const clock = new FrameClock()
+    for (let i = 0; i < hz * 0.6; i++) {
+      if (fixed) clock.frame(1000 / hz, 1, step => { run.update(step, true); return true })
+      else run.update(1 / hz, true)
+    }
+    assert.equal(target.hp, 200 - 24 * 1.4)
+    assert.equal(events(run.combat, 'air').length, 1)
+    assert.ok(run.runner.uppercut.retreated <= 0.3)
+    assert.equal(run.runner.speed, run.balance.speed)
+    return run.runner.z
+  }
+  const expected = simulate(60, false)
+  for (const hz of [30, 60, 120]) for (const fixed of [false, true]) assert.ok(Math.abs(simulate(hz, fixed) - expected) < 1e-8)
+})
+
+test('spring extreme DEV settings stay finite, reserve positive phases and do not change the ram profile', () => {
+  for (const value of [-100, 0, 100, Infinity, NaN]) {
+    const settings = { ...balance(), uppercutAnimation: value, uppercutWindup: value, uppercutDrive: value,
+      uppercutReach: value, uppercutBrake: value, uppercutMaxRetreat: value, uppercutLungeDistance: value }
+    const profile = uppercutTiming(settings)
+    assert.ok(Object.values(profile).every(Number.isFinite))
+    assert.ok(profile.windup > 0 && profile.drive > 0 && profile.recovery >= 0.02 - 1e-10)
+    const runner = new Runner(settings)
+    runner.z = 10
+    runner.launchUppercut()
+    runner.advance(2)
+    assert.ok(Number.isFinite(runner.z) && Number.isFinite(runner.speed))
+    assert.ok(runner.uppercut.retreated <= 0.3 + 1e-10)
+    assert.equal(runner.uppercutActive, false)
+    const frame = uppercutFrame(runner.uppercut.age, runner.uppercut.profile)
+    assert.ok(Object.values(frame).every(x => typeof x !== 'number' || Number.isFinite(x)))
+    assert.equal(runner.launchSuper(), true)
+    runner.advance(0.2)
+    assert.equal(runner.speed, settings.speed * settings.superSpeed)
+  }
+})
+
+test('spring keeps the seeded spawn schedule and normal lookahead while retreating', () => {
+  const normal = newRun(1), spring = newRun(1)
+  normal.start(); spring.start()
+  normal.runner.z = spring.runner.z = 10
+  spring.special('uppercut')
+  for (let i = 0; i < 28; i++) { normal.update(dt, true); spring.update(dt, true) }
+  assert.equal(spring.now, normal.now)
+  assert.equal(spring.runner.spawnSpeed, normal.runner.spawnSpeed)
+  assert.ok(normal.combat.enemies.length > 0)
+  assert.deepEqual(spring.combat.enemies.map(e => [e.type, e.lane, e.hp]), normal.combat.enemies.map(e => [e.type, e.lane, e.hp]))
+  spring.combat.enemies.forEach((enemy, i) => {
+    assert.ok(Math.abs((enemy.z - spring.runner.z) - (normal.combat.enemies[i].z - normal.runner.z)) < 1e-8)
+  })
+})
+
+test('spring splits a direction change within compression and measures backward travel rather than net movement', () => {
+  const settings = { ...balance(), speed: 20 }
+  const runner = new Runner(settings)
+  runner.advance(5, true)
+  const start = runner.z
+  runner.launchUppercut()
+  runner.advance(0.1, false)
+  assert.ok(runner.uppercutSegments.some(s => s.z1 < s.z0))
+  assert.ok(runner.uppercutSegments.some(s => s.z1 > s.z0))
+  assert.ok(runner.uppercut.retreated > 0 && runner.uppercut.retreated <= 0.3)
+  assert.ok(runner.z > start)
+})
+
+test('spring KO and its real landing upgrade grant XP exactly once; its visual wave never causes area damage', () => {
+  const run = newRun()
+  run.start()
+  run.runner.z = 10
+  const first = place(run, 'thug', 0, 3.8, 20)
+  const flank = place(run, 'thug', 1, 3.8, 200)
+  run.balance.uppercutChainDepth = 0
+  run.special('uppercut')
+  play(run, 0.55, true)
+  assert.equal(first.hp, 0)
+  assert.equal(flank.hp, 200)
+  assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], [1, 16, 100])
+  assert.equal(events(run.combat, 'air').length, 1)
+  assert.equal(events(run.combat, 'landing').length, 0)
+  play(run, 1, true)
+  assert.deepEqual([run.combat.kills, run.combat.xp, run.combat.score], [1, 16, 100])
 })
 
 test('swept ricochet needs simultaneous body height and planar contact', async () => {

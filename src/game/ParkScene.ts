@@ -1,7 +1,8 @@
 import Phaser from 'phaser'
 import { AssetRegistry } from '../assets/AssetRegistry'
 import { GameAudio } from '../audio/GameAudio'
-import { defaultBalance } from '../combat/balance'
+import { defaultBalance, uppercutTiming } from '../combat/balance'
+import { uppercutFrame } from '../combat/Uppercut'
 import { BalancePanel } from '../debug/BalancePanel'
 import { TouchController, type InputMode } from '../input/TouchController'
 import { CombatView } from '../rendering/CombatView'
@@ -197,8 +198,13 @@ export class ParkScene extends Phaser.Scene {
     this.audio.update(this.run.phase, combat.boss?.bossPhase, seconds, counter)
     this.audio.updateDashWind(this.run.active && !teaching && !this.debug?.paused ? runner.superBoost : 0)
     const cameraBoost = (demo?.boost ?? runner.superBoost) * (reducedMotion.matches ? 0 : 1.9)
+    const uppercut = runner.uppercut
+    const upperAge = demo?.kind === 'uppercut' && demo.strike ? -demo.strike.at :
+      this.debug?.preview?.pose === 'uppercut' ? (this.wall - this.debug.preview.start) % 0.9 : uppercut?.age ?? -1
+    const dip = reducedMotion.matches ? 0 : uppercutFrame(upperAge, demo || this.debug?.preview ?
+      uppercutTiming(this.run.balance) : uppercut?.profile ?? uppercutTiming(this.run.balance)).cameraDip
     const projection = new PerspectiveProjector(width, height, runner.z + (demo?.z ?? 0), world,
-      runner.x + (demo?.x ?? 0), runner.dash + cameraBoost - this.combatView.bodyRecoil(this.wall) * 0.45)
+      runner.x + (demo?.x ?? 0), runner.dash + cameraBoost - this.combatView.bodyRecoil(this.wall) * 0.45, dip)
     this.park.draw(projection, world.viewDistance, Math.max(0, Math.min(1, (this.run.now - 80) / 65)))
     this.debug?.setTutorialHidden(teaching)
     this.debug?.draw(this.run, this.game.loop.actualFps, this.wall)

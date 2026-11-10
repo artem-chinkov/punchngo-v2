@@ -21,6 +21,23 @@ export function sweepBox(x: number, z: number, y: number, dx: number, dz: number
   return enter <= exit ? enter : Infinity
 }
 
+/** A lane box with a front that grows linearly during the segment. */
+export function sweepGrowingBox(x: number, z: number, y: number, dx: number, dz: number, dy: number,
+  width: number, reach0: number, reach1: number, height: number) {
+  let enter = 0, exit = 1
+  const below = (value: number, change: number) => {
+    if (Math.abs(change) < 1e-12) return value <= 1e-10
+    const time = -value / change
+    if (change < 0) enter = Math.max(enter, time)
+    else exit = Math.min(exit, time)
+    return enter <= exit + 1e-12
+  }
+  if (!below(x - width, dx) || !below(-x - width, -dx) ||
+    !below(-z, -dz) || !below(z - reach0, dz - (reach1 - reach0)) ||
+    !below(y - height, dy) || !below(-y - height, -dy)) return Infinity
+  return enter <= exit && enter <= 1 && exit >= 0 ? Math.max(0, enter) : Infinity
+}
+
 /** Planar disc contact intersected with the vertical overlap interval. */
 export function sweepBodies(x: number, z: number, y: number, dx: number, dz: number, dy: number,
   radius: number, height: number) {

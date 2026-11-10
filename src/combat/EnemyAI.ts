@@ -80,7 +80,7 @@ export class EnemyAI {
   constructor(private readonly balance: Balance) {}
 
   update(enemies: Enemy[], runner: Runner, now: number, dt: number,
-    strike: (enemy: Enemy) => void, land: (enemy: Enemy) => void) {
+    strike: (enemy: Enemy, at: number) => void, land: (enemy: Enemy) => void) {
     let bossThreat = false
     let active = false
     let candidate: Enemy | undefined
@@ -109,7 +109,7 @@ export class EnemyAI {
     }
   }
 
-  private advanceFlight(enemy: Enemy, runner: Runner, now: number, dt: number, land: (enemy: Enemy) => void) {
+  advanceFlight(enemy: Enemy, runner: Runner, now: number, dt: number, land: (enemy: Enemy) => void) {
     if (now >= enemy.flightUntil && enemy.y <= 0) {
       enemy.chain = undefined
       if (enemy.pose === 'airborne' || enemy.pose === 'sideFlight' || enemy.pose === 'knockback' || enemy.pose === 'hit') {
@@ -131,13 +131,14 @@ export class EnemyAI {
     return true
   }
 
-  private regular(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy) => void) {
+  private regular(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy, at: number) => void) {
     const stats = this.balance.enemies[enemy.type]
     if (enemy.pose === 'telegraph') {
       enemy.z -= stats.speed * dt * 0.35
       if (now >= enemy.until) {
+        const attackAt = enemy.until
         setPose(enemy, 'attack', now, 0.16)
-        if (enemy.z - runner.z <= 2.65 && enemy.z - runner.z > -0.4 && Math.abs(enemy.x - runner.x) < 0.84) strike(enemy)
+        if (runner.uppercutStep || (enemy.z - runner.z <= 2.65 && enemy.z - runner.z > -0.4 && Math.abs(enemy.x - runner.x) < 0.84)) strike(enemy, attackAt)
       }
       return
     }
@@ -171,7 +172,7 @@ export class EnemyAI {
     }
   }
 
-  private boss(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy) => void) {
+  private boss(enemy: Enemy, runner: Runner, now: number, dt: number, strike: (enemy: Enemy, at: number) => void) {
     const stats = this.balance.enemies.bulldog
     const move = runner.z - runner.previousZ
     // The ram's swept solver owns the barrier during powered movement. Following
@@ -203,8 +204,9 @@ export class EnemyAI {
       enemy.x = toward(enemy.x, runner.x, (now > enemy.until - 0.12 ? 8 : 1.1) * dt)
       follow()
       if (now >= enemy.until) {
+        const attackAt = enemy.until
         setPose(enemy, 'attack', now, 0.17)
-        if (enemy.z - runner.z <= 3.55) strike(enemy)
+        if (runner.uppercutStep || enemy.z - runner.z <= 3.55) strike(enemy, attackAt)
       }
       return
     }

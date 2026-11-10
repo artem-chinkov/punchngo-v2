@@ -4,8 +4,8 @@ import type { Runner } from '../game/Runner'
 import { Build, type UpgradeId } from '../game/upgrades'
 import { laneAt, laneX, route, type Lane } from '../world/route'
 import { createEnemy, EnemyAI, flightEdge, inCounterWindow, moveFlightPlanar, setPose, type Chain, type Enemy } from './EnemyAI'
-import { superTiming, uppercutTiming, type Balance } from './balance'
-import { sweepBodies, sweepBox } from './sweep'
+import { superTiming, type Balance } from './balance'
+import { sweepBodies, sweepBox, sweepGrowingBox } from './sweep'
 import { DashPush } from './DashPush'
 
 export type Effect = 'hit' | 'dashImpact' | 'ricochet' | 'counter' | 'ideal' | 'chain' | 'air' | 'wave' | 'electric' |
@@ -63,7 +63,6 @@ export class CombatSystem {
   private nextId = 1
   private hand: Hand = 'left'
   private uppercutHand: Hand = 'left'
-  private uppercutImpact = Infinity
   private specialDuration = 1
   private nextPunch = 0
   private lastTap = -Infinity
@@ -133,7 +132,7 @@ export class CombatSystem {
   }
 
   special(runner: Runner, now: number, kind: Special) {
-    if (!this.canStrike() || runner.superActive || this.specialRemaining(now) > 1e-9) return false
+    if (!this.canStrike() || runner.superActive || runner.uppercutActive || this.specialRemaining(now) > 1e-9) return false
     if (kind === 'superDash') {
       if (!runner.launchSuper()) return false
       this.specialDuration = superTiming(this.balance).duration + this.balance.superRecovery
@@ -142,11 +141,11 @@ export class CombatSystem {
       this.audioCues.push('dash.start')
       if (this.build.rank('wave')) this.audioCues.push('upgrade.shockwave')
     } else {
-      const timing = uppercutTiming(this.balance)
+      if (!runner.launchUppercut()) return false
+      const timing = runner.uppercut!.profile
       this.specialDuration = Math.max(timing.duration, this.balance.specialCooldown)
       this.uppercutStrike = this.strike = { hand: this.uppercutHand, kind, at: now, aim: 0, hit: false }
       this.uppercutHand = this.uppercutHand === 'left' ? 'right' : 'left'
-      this.uppercutImpact = now + timing.windup
       this.audioCues.push('uppercut.windup')
     }
     this.nextSpecial = now + this.specialDuration
@@ -154,23 +153,159 @@ export class CombatSystem {
     return true
   }
 
-  private resolveUppercut(runner: Runner, now: number) {
-    this.uppercutImpact = Infinity
-    const strike = this.uppercutStrike
-    const target = this.laneTarget(runner, laneAt(runner.x), this.balance.reach, true)
-    if (!strike || !target) {
-      this.emit('miss', runner.x, runner.z + 1.8)
-      return
+  clearUppercut(runner: Runner) {
+    runner.stopUppercut()
+    this.uppercutStrike = undefined
+  }
+
+  private resolveUppercutStep(runner: Runner, now: number, dt: number, invulnerable: boolean,
+    attacks: { enemy: Enemy; at: number }[]) {
+    const step = runner.uppercutStep!
+    const state = step.state, p = state.profile
+    for (const enemy of this.enemies) {
+      const gap = enemy.previousZ - runner.previousZ
+      if (enemy.contactSide && now >= enemy.contactUntil &&
+        !(gap >= -bodyBehind - 0.08 && gap <= bodyAhead + 0.08 &&
+          Math.abs(enemy.previousX - runner.previousX) <= bodyWidth + 0.08 && enemy.previousY <= bodyHeight + 0.08)) {
+        enemy.contactSide = 0
+      }
     }
-    strike.aim = target.x - runner.x
-    strike.hit = true
-    const chain: Chain = { kind: 'uppercut', visited: new Set([target.id]) }
-    this.audioCues.push('uppercut.impact')
-    this.hit(target, this.baseDamage * this.balance.uppercutDamage, now, 'air')
-    if (!this.canDisplace(target)) return
-    const lift = target.type === 'bulldog' ? 0 : this.balance.uppercutLift
-    this.impulse(target, chain, 0, 0, this.force * this.balance.uppercutForce, now, this.balance.uppercutFlight, lift)
-    if (lift && this.build.rank('uppercut')) target.landingWave = chain
+    type Point = { x: number; z: number; y: number }
+    const mix = (a: number, b: number, t: number) => a + (b - a) * t
+    const unit = (t: number) => Math.max(0, Math.min(1, t))
+    const paths = new Map(this.enemies.map(enemy => [enemy, { from: 0,
+      start: { x: enemy.previousX, z: enemy.previousZ, y: enemy.previousY },
+      end: { x: enemy.x, z: enemy.z, y: enemy.y } }]))
+    const point = (enemy: Enemy, time: number): Point => {
+      const path = paths.get(enemy)!, u = path.from >= 1 ? 1 : unit((time - path.from) / (1 - path.from))
+      return { x: mix(path.start.x, path.end.x, u), z: mix(path.start.z, path.end.z, u), y: mix(path.start.y, path.end.y, u) }
+    }
+    const hero = (time: number) => {
+      const segment = runner.uppercutSegments.find(part => time <= part.to + 1e-12) ?? runner.uppercutSegments.at(-1)!
+      const u = unit((time - segment.from) / (segment.to - segment.from))
+      return { x: mix(segment.x0, segment.x1, u), z: mix(segment.z0, segment.z1, u) }
+    }
+    const savePath = (enemy: Enemy, time: number, start: Point) => {
+      paths.set(enemy, { from: time, start, end: { x: enemy.x, z: enemy.z, y: enemy.y } })
+    }
+    const handledAttacks = new Set<number>()
+    const bodyContacts = new Set<number>()
+    let cursor = 0
+    // Only this ability uses this event ordering; ordinary combat and DashPush
+    // retain their own flow. A changed flight gets a new path for the remainder.
+    while (this.canStrike()) {
+      let event: { enemy: Enemy; time: number; kind: 0 | 1 | 2; gap: number; attack?: number } | undefined
+      const offer = (enemy: Enemy, time: number, kind: 0 | 1 | 2, gap = 0, attack?: number) => {
+        if (!Number.isFinite(time) || time < cursor - 1e-10 || time > 1 + 1e-10) return
+        if (!event || time < event.time - 1e-10 || (Math.abs(time - event.time) <= 1e-10 &&
+          (kind < event.kind || (kind === event.kind && (gap < event.gap - 1e-10 ||
+            (Math.abs(gap - event.gap) <= 1e-10 && enemy.id < event.enemy.id)))))) event = { enemy, time, kind, gap, attack }
+      }
+      attacks.forEach((attack, index) => {
+        if (!handledAttacks.has(index)) offer(attack.enemy, unit((attack.at - (now - dt)) / dt), 0, 0, index)
+      })
+      for (const segment of runner.uppercutSegments) {
+        const start = Math.max(cursor, segment.from), end = segment.to
+        if (end < start + 1e-12) continue
+        const h0 = hero(start), h1 = hero(end)
+        for (const enemy of this.enemies) {
+          if (enemy.hp <= 0 || enemy.dashPushed) continue
+          if (enemy.type !== 'bulldog' && !bodyContacts.has(enemy.id) && !enemy.contactSide && now >= enemy.contactUntil) {
+            const a = point(enemy, start), b = point(enemy, end)
+            // A retreat can enter a body from behind; a forward step keeps the
+            // established one-sided contact rule.
+            if (a.z - h0.z >= -bodyBehind || h1.z < h0.z) {
+              const t = sweepBox(a.x - h0.x, a.z - h0.z, a.y, b.x - a.x - (h1.x - h0.x),
+                b.z - a.z - (h1.z - h0.z), b.y - a.y, bodyWidth, bodyBehind, bodyAhead, bodyHeight)
+              offer(enemy, mix(start, end, t), 1)
+            }
+          }
+          if (state.hit || state.missed || enemy.pose === 'airborne' || enemy.landingWave) continue
+          const from = Math.max(start, (p.windup - step.age) / dt)
+          const to = Math.min(end, (p.driveEnd - step.age) / dt)
+          if (to <= from + 1e-12) continue
+          // Lane membership changes at the midpoint of a lane change, not at
+          // its destination gesture. Split there before sweeping the lane box.
+          const cuts = [from, to]
+          if (segment.x1 !== segment.x0) for (const boundary of [-route.laneWidth / 2, route.laneWidth / 2]) {
+            const t = segment.from + (boundary - segment.x0) / (segment.x1 - segment.x0) * (segment.to - segment.from)
+            if (t > from + 1e-12 && t < to - 1e-12) cuts.push(t)
+          }
+          cuts.sort((a, b) => a - b)
+          for (let i = 1; i < cuts.length; i++) {
+            const aTime = cuts[i - 1], bTime = cuts[i]
+            const a = point(enemy, aTime), b = point(enemy, bTime), ha = hero(aTime), hb = hero(bTime)
+            const lane = laneAt(hero((aTime + bTime) / 2).x)
+            const reach = (t: number) => p.reach * unit((step.age + dt * t - p.windup) / p.drive)
+            const t = sweepGrowingBox(a.x - laneX(lane), a.z - ha.z, a.y, b.x - a.x,
+              b.z - a.z - (hb.z - ha.z), b.y - a.y, route.laneWidth / 2, reach(aTime), reach(bTime), 0.05)
+            const time = mix(aTime, bTime, t)
+            if (Number.isFinite(t) && laneAt(point(enemy, Math.min(bTime, time + 1e-9)).x) === lane) {
+              offer(enemy, time, 2, point(enemy, time).z - hero(time).z)
+            }
+          }
+        }
+      }
+      if (!event) break
+      const { enemy, time, kind } = event
+      cursor = time
+      const at = now - dt + time * dt, position = point(enemy, time), h = hero(time)
+      if (kind === 0) {
+        handledAttacks.add(event.attack!)
+        const gap = position.z - h.z
+        if (!invulnerable && enemy.hp > 0 && enemy.pose === 'attack' && gap > -0.4 &&
+          gap <= (enemy.type === 'bulldog' ? 3.55 : 2.65) &&
+          (enemy.type === 'bulldog' || Math.abs(position.x - h.x) < 0.84)) {
+          this.hurt(enemy, this.balance.enemies[enemy.type].damage, at, 'attack', runner)
+        }
+      } else if (kind === 1) {
+        bodyContacts.add(enemy.id)
+        const flight = enemy.chain, flying = at < enemy.flightUntil || position.y > 0
+        const direction = this.shoveSide(enemy, h.x, position.x)
+        this.events.push({ kind: flying ? 'bodyShove' : 'bodyContact', enemy: enemy.id, ...position, direction })
+        if (!flying) {
+          this.audioCues.push('enemy.collision')
+          if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].contact, at, 'contact', runner)
+        }
+        this.shove(enemy, flight ?? { kind: 'body', visited: new Set([enemy.id]) }, flight ? enemy.depth : 0,
+          { ...position, direction }, 8.4, 4.3, at, 0.38, dt * (1 - time))
+        savePath(enemy, time, position)
+      } else {
+        state.hit = true
+        const strike = this.uppercutStrike!
+        strike.aim = position.x - h.x
+        strike.hit = true
+        enemy.x = position.x
+        enemy.z = position.z
+        enemy.y = position.y
+        this.audioCues.push('uppercut.impact')
+        this.hit(enemy, this.baseDamage * this.balance.uppercutDamage, at, 'air')
+        if (this.canDisplace(enemy)) {
+          const chain: Chain = { kind: 'uppercut', visited: new Set([enemy.id]) }
+          const lift = enemy.type === 'bulldog' ? 0 : this.balance.uppercutLift
+          this.impulse(enemy, chain, 0, 0, this.force * this.balance.uppercutForce, at, this.balance.uppercutFlight, lift)
+          if (lift && this.build.rank('uppercut')) enemy.landingWave = chain
+          enemy.previousX = enemy.x
+          enemy.previousZ = enemy.z
+          enemy.previousY = enemy.y
+          this.ai.advanceFlight(enemy, runner, now, dt * (1 - time), target => {
+            if (target.landingWave) this.landings.push(target)
+          })
+        } else {
+          // Live Bulldog keeps his AI's proposed movement and attack timing.
+          const end = paths.get(enemy)!.end
+          enemy.x = end.x
+          enemy.z = end.z
+          enemy.y = end.y
+        }
+        savePath(enemy, time, position)
+      }
+    }
+    if (!state.hit && !state.missed && state.age + 1e-9 >= p.driveEnd && this.canStrike()) {
+      state.missed = true
+      this.emit('miss', runner.x, runner.z + p.reach)
+    }
+    this.clearBodyOverlap(runner, now)
   }
 
   sideStrike(runner: Runner, now: number, direction: -1 | 1) {
@@ -227,8 +362,6 @@ export class CombatSystem {
   update(runner: Runner, now: number, dt: number, invulnerable = false) {
     if (!this.canStrike()) return
     this.correctedX.clear()
-    if (now + 1e-9 >= this.uppercutImpact) this.resolveUppercut(runner, now)
-    if (!this.canStrike()) return
     if (this.pendingTap !== undefined && this.punchReady(now)) {
       const at = this.pendingTap
       this.pendingTap = undefined
@@ -239,10 +372,16 @@ export class CombatSystem {
     const bossPose = this.boss?.pose
     this.landings.length = 0
     const attacks: Enemy[] = []
-    this.ai.update(this.enemies, runner, now, dt, enemy => {
-      if (runner.superSweepTo > runner.superSweepFrom) attacks.push(enemy)
+    const uppercutAttacks: { enemy: Enemy; at: number }[] = []
+    this.ai.update(this.enemies, runner, now, dt, (enemy, at) => {
+      if (runner.uppercutStep) uppercutAttacks.push({ enemy, at })
+      else if (runner.superSweepTo > runner.superSweepFrom) attacks.push(enemy)
       else if (!invulnerable) this.hurt(enemy, this.balance.enemies[enemy.type].damage, now, 'attack', runner)
     }, enemy => { if (enemy.landingWave) this.landings.push(enemy) })
+
+    if (runner.uppercutStep && runner.uppercutSegments.length) {
+      this.resolveUppercutStep(runner, now, dt, invulnerable, uppercutAttacks)
+    }
 
     this.resolveContacts(runner, now, dt, invulnerable, true)
     if (!this.canStrike()) return
@@ -269,10 +408,10 @@ export class CombatSystem {
     }
 
     if (!this.canStrike()) return
-    this.resolveContacts(runner, now, dt, invulnerable)
+    if (!runner.uppercutStep) this.resolveContacts(runner, now, dt, invulnerable)
     if (!this.canStrike()) return
     for (const enemy of this.landings) this.landWave(enemy, now)
-    this.collisions(now)
+    this.collisions(now, dt)
     if (this.boss && this.boss.hp <= 0) return
     let nearby = false
     for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -391,6 +530,10 @@ export class CombatSystem {
       }
       this.shove(enemy, bodyChain, flight ? enemy.depth : 0, { x, z, direction }, 8.4, 4.3, now, 0.38, dt * (1 - time))
     }
+    this.clearBodyOverlap(runner, now)
+  }
+
+  private clearBodyOverlap(runner: Runner, now: number) {
     // A laterally flying enemy must be outside the player's body before the
     // camera crosses it, even if a fast frame leaves very little reaction time.
     for (const enemy of this.enemies) {
@@ -555,7 +698,7 @@ export class CombatSystem {
     setPose(enemy, lift ? 'airborne' : enemy.hp <= 0 ? 'fall' : Math.abs(vx) > 3 ? 'sideFlight' : 'knockback', now, length)
   }
 
-  private collisions(now: number) {
+  private collisions(now: number, dt: number) {
     for (const source of this.enemies) {
       const chain = source.chain
       if (!chain || source.depth >= (chain.kind === 'uppercut' ? this.balance.uppercutChainDepth : this.balance.chainDepth) ||
@@ -563,6 +706,7 @@ export class CombatSystem {
         source.since >= now || now >= source.flightUntil) continue
       const body = chain.kind === 'body'
       const heavy = chain.kind === 'uppercut'
+      const flightStart = heavy && dt > 0 ? Math.max(0, Math.min(1, (source.since - (now - dt)) / dt)) : 0
       const sourceX = this.correctedX.get(source.id) ?? source.x
       let hit: Enemy | undefined
       let earliest = Infinity
@@ -571,8 +715,11 @@ export class CombatSystem {
       for (const target of this.enemies) {
         if (target.hp <= 0 || chain.visited.has(target.id) ||
           (body ? target.type === 'bulldog' : target.z < source.previousZ - 0.35)) continue
-        const dx = source.previousX - target.previousX
-        const dz = source.previousZ - target.previousZ
+        const targetX = target.previousX + (target.x - target.previousX) * flightStart
+        const targetZ = target.previousZ + (target.z - target.previousZ) * flightStart
+        const targetY = target.previousY + (target.y - target.previousY) * flightStart
+        const dx = source.previousX - targetX
+        const dz = source.previousZ - targetZ
         const endX = sourceX - (this.correctedX.get(target.id) ?? target.x)
         const endZ = source.z - target.z
         const vx = endX - dx
@@ -581,7 +728,7 @@ export class CombatSystem {
         let t = speedSq > 0 ? Math.max(0, Math.min(1, -(dx * vx + dz * vz) / speedSq)) : 0
         const radius = target.type === 'bulldog' ? 0.90 : 0.68
         if (heavy || body) {
-          const y = source.previousY - target.previousY
+          const y = source.previousY - targetY
           t = sweepBodies(dx, dz, y, vx, vz, source.y - target.y - y, radius, body ? 0.8 : 1.10)
         }
         if (t < earliest && (heavy || body || (Math.abs(source.y - target.y) < 0.81 &&

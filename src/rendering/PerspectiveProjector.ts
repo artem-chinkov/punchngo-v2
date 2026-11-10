@@ -15,8 +15,9 @@ export class PerspectiveProjector {
     private readonly settings: WorldSettings,
     readonly cameraX = 0,
     dash = 0,
+    cameraDip = 0,
   ) {
-    this.horizon = height * settings.horizon + dash * 6
+    this.horizon = height * settings.horizon + dash * 6 + cameraDip
     this.curvature = settings.curvature
     this.cameraHeight = settings.cameraHeight
     // The 0% setting still has a positive projection distance. Keep the existing 70–120% scale.

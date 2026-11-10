@@ -36,6 +36,10 @@ export interface Balance {
   uppercutAnimation: number
   uppercutWindup: number
   uppercutDrive: number
+  uppercutReach: number
+  uppercutBrake: number
+  uppercutMaxRetreat: number
+  uppercutLungeDistance: number
   uppercutFlight: number
   uppercutTransfer: number
   uppercutMaxSpeed: number
@@ -84,7 +88,8 @@ export const defaultBalance: Balance = {
   punchInterval: 0.25, minPunchInterval: 0.18, holdHurtPause: 0.12,
   specialCooldown: 0.7, superSpeed: 2.8, superDuration: 1.2, superPrepare: 0.1, superFade: 0.3,
   superRecovery: 0.8, superDamage: 0.5, electricDamage: 0.55, electricRadius: 3.9,
-  uppercutAnimation: 0.55, uppercutWindup: 0.12, uppercutDrive: 0.13, uppercutFlight: 0.95,
+  uppercutAnimation: 0.55, uppercutWindup: 0.10, uppercutDrive: 0.14,
+  uppercutReach: 4, uppercutBrake: 8, uppercutMaxRetreat: 0.3, uppercutLungeDistance: 0.85, uppercutFlight: 0.95,
   uppercutTransfer: 1.04, uppercutMaxSpeed: 48, uppercutChainDepth: 2, counterTutorialLock: 2.5,
   uppercutDamage: 1.4, uppercutLift: 6.4, uppercutForce: 2.3, landingDamage: 0.4, landingRadius: 1.9,
   sideDamage: 0.7, sideForce: 0.82, sideImpulse: 6.2,
@@ -111,8 +116,14 @@ export function superTiming(balance: Balance) {
 }
 
 export function uppercutTiming(balance: Balance) {
-  const duration = Math.max(0.08, balance.uppercutAnimation)
-  const windup = Math.min(balance.uppercutWindup, duration - 0.04)
-  const drive = Math.min(balance.uppercutDrive, duration - windup - 0.02)
-  return { duration, windup, drive }
+  const safe = (value: number, fallback: number, min: number, max: number) =>
+    Math.max(min, Math.min(max, Number.isFinite(value) ? value : fallback))
+  const duration = safe(balance.uppercutAnimation, 0.55, 0.12, 1.5)
+  const windup = safe(balance.uppercutWindup, 0.10, 0.01, Math.min(0.5, duration - 0.04))
+  const drive = safe(balance.uppercutDrive, 0.14, 0.01, Math.min(0.5, duration - windup - 0.02))
+  const driveEnd = windup + drive
+  const distance = safe(balance.uppercutLungeDistance, 0.85, 0, 2)
+  return { duration, windup, drive, driveEnd, recovery: duration - driveEnd,
+    reach: safe(balance.uppercutReach, 4, 1, 8), brake: safe(balance.uppercutBrake, 8, 0, 20),
+    retreat: safe(balance.uppercutMaxRetreat, 0.3, 0, 0.3), distance, peak: 2 * distance / (1.1 * drive) }
 }
