@@ -39,4 +39,6 @@ Mac и iPhone должны быть в одной Wi‑Fi сети. Открой
 - `?renderer=auto` включает выбор Phaser AUTO. Canvas используется по умолчанию.
 - `?assets=raster` включает PNG/атласы из [реестра](src/assets/rasterPack.ts). Для отсутствующих кадров игра использует процедурную графику. Подключай файлы из `public/assets/` с идентификаторами из [ids.ts](src/assets/ids.ts) и сохраняй точки опоры кадров.
 
-[Дизайн игры](GAME_DESIGN.md) · [Техническая спецификация](TECH_SPEC.md) · [Отчёт о проверках](REPORT.md)
+## Документация
+
+[Указатель проекта](docs/README.md) · [GDD](docs/GDD.md) · [Техническая спецификация](docs/TECH_SPEC.md) · [Баланс и контент](docs/BALANCE.md) · [Сценарии приёмки](docs/ACCEPTANCE.md)
